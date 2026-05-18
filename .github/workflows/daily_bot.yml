@@ -1,4 +1,4 @@
-name: Daily 0DTE Turbo Bot
+name: SPY 0DTE Signal Machine
 
 on:
   workflow_dispatch: 
@@ -15,18 +15,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: 라이브러리 설치 (에러 해결)
+      - name: Install Dependencies
         run: pip install pandas pytz requests yfinance pandas_market_calendars
-      - name: 봇 실행
+      - name: Run Signal Engine
         env:
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
           TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: python find_trigger.py
-      - name: 결과 업데이트
+      - name: Push Results
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add data.json 
-          git commit -m "Turbo Update: $(date)" || echo "No changes"
+          git commit -m "Signal Update: $(date)" || echo "No changes"
           git push

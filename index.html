@@ -2,92 +2,199 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Arun AI Master Dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<title>SPY 0DTE Signal Machine</title>
+<meta name="description" content="7-Layer Scoring System for SPY 0DTE Options Trading">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-:root { --bg: #0c0d12; --surface: #14161f; --border: #252836; --muted: #8b90a1; --text: #e8eaf0; --go: #3dd68c; --stop: #f07178; --warn: #f5c451; --info: #82aaff; }
-body { background: var(--bg); color: var(--text); font-family: "DM Sans", sans-serif; padding: 1rem; margin: 0; }
-.wrap { max-width: 1000px; margin: 0 auto; }
-.status-bar { display: flex; justify-content: space-between; align-items: center; background: #08090d; border: 1px solid var(--border); padding: 0.6rem 1rem; border-radius: 10px; margin-bottom: 1rem; font-size: 0.75rem; font-family: "JetBrains Mono", monospace; }
-.pulse-dot { width: 7px; height: 7px; background: var(--go); border-radius: 50%; box-shadow: 0 0 8px var(--go); animation: pulse 1.5s infinite; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+:root{--bg:#06070b;--surface:rgba(16,18,27,0.85);--surface2:rgba(22,25,38,0.9);--border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.1);--muted:#6b7084;--text:#e4e6ef;--go:#00e87b;--stop:#ff4d6a;--warn:#ffb627;--info:#5b8cff;--purple:#a78bfa;--cyan:#22d3ee;--glass:rgba(255,255,255,0.03)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:"Inter",sans-serif;min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle at 30% 20%,rgba(91,140,255,0.04) 0%,transparent 50%),radial-gradient(circle at 70% 80%,rgba(0,232,123,0.03) 0%,transparent 50%);pointer-events:none;z-index:0}
+.wrap{max-width:1100px;margin:0 auto;padding:1rem;position:relative;z-index:1}
+.mono{font-family:"JetBrains Mono",monospace}
 
-/* 애니메이션 효과 */
-@keyframes flash-up { 0% { background: rgba(61,214,140,0.3); } 100% { background: var(--surface); } }
-@keyframes flash-down { 0% { background: rgba(240,113,120,0.3); } 100% { background: var(--surface); } }
-.animate-up { animation: flash-up 0.8s ease-out; }
-.animate-down { animation: flash-down 0.8s ease-out; }
+/* Status Bar */
+.status-bar{display:flex;justify-content:space-between;align-items:center;background:var(--surface);backdrop-filter:blur(20px);border:1px solid var(--border);padding:0.5rem 1rem;border-radius:12px;margin-bottom:1rem;font-size:0.7rem}
+.pulse-dot{width:6px;height:6px;background:var(--go);border-radius:50%;box-shadow:0 0 10px var(--go);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
 
-.rule-list { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem; margin-bottom: 1.2rem; }
-.rule-item { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #1f222e; font-size: 0.85rem; }
-.badge { font-family: "JetBrains Mono", monospace; font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 4px; min-width: 55px; text-align: center; }
-.pass { background: rgba(61,214,140,0.15); color: var(--go); } .fail { background: rgba(240,113,120,0.15); color: var(--stop); }
+/* Score Gauge Section */
+.gauge-section{display:grid;grid-template-columns:220px 1fr;gap:1.2rem;margin-bottom:1.2rem}
+@media(max-width:700px){.gauge-section{grid-template-columns:1fr}}
+.gauge-card{background:var(--surface);backdrop-filter:blur(20px);border:1px solid var(--border);border-radius:20px;padding:1.5rem;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.gauge-card::before{content:'';position:absolute;inset:0;background:radial-gradient(circle at 50% 0%,rgba(91,140,255,0.08),transparent 70%);pointer-events:none}
+.gauge-wrap{position:relative;width:180px;height:180px}
+.gauge-wrap svg{transform:rotate(-90deg)}
+.gauge-bg{fill:none;stroke:rgba(255,255,255,0.05);stroke-width:10}
+.gauge-fill{fill:none;stroke-width:10;stroke-linecap:round;transition:stroke-dashoffset 1.5s cubic-bezier(0.4,0,0.2,1),stroke 0.8s}
+.gauge-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
+.gauge-score{font-size:2.8rem;font-weight:900;line-height:1;letter-spacing:-2px}
+.gauge-label{font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-top:4px}
+.signal-badge{margin-top:0.8rem;padding:0.3rem 1rem;border-radius:20px;font-size:0.75rem;font-weight:700;letter-spacing:0.05em;border:1px solid transparent}
 
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.8rem; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; transition: background 0.5s; }
-.section-title { font-size: 0.7rem; color: var(--info); letter-spacing: 0.15em; margin: 1.5rem 0 0.8rem; text-transform: uppercase; font-weight: 700; }
+/* Right Panel */
+.info-panel{display:flex;flex-direction:column;gap:0.8rem}
+.direction-box{background:var(--surface);backdrop-filter:blur(20px);border:1px solid var(--border);border-radius:16px;padding:1rem 1.2rem;display:flex;align-items:center;gap:1rem}
+.dir-indicator{font-size:2rem;font-weight:900;letter-spacing:2px;text-shadow:0 0 20px currentColor}
+.dir-meta{flex:1}
+.dir-meta .label{font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.15em}
+.dir-meta .value{font-size:0.85rem;font-weight:600;margin-top:2px}
 
-/* 화려한 UI 네온 효과 추가 */
-.verdict-box { background: var(--surface); border: 2px solid var(--border); border-radius: 20px; padding: 1.5rem; text-align: center; margin-bottom: 1.2rem; box-shadow: 0 0 25px rgba(61, 214, 140, 0.15); position: relative; overflow: hidden; }
-#vMain { font-size:2.8rem; font-weight:800; text-shadow: 0 0 15px currentColor; letter-spacing: 2px; }
-#vReason { color:var(--muted); font-size:0.9rem; margin-top:0.4rem; }
-.card span { text-shadow: 0 0 8px rgba(255, 255, 255, 0.2); }
-.up { color: var(--go); text-shadow: 0 0 12px rgba(61, 214, 140, 0.6); } 
-.down { color: var(--stop); text-shadow: 0 0 12px rgba(240, 113, 120, 0.6); }
+/* Layer Bars */
+.layers-box{background:var(--surface);backdrop-filter:blur(20px);border:1px solid var(--border);border-radius:16px;padding:1rem 1.2rem;flex:1}
+.layer-row{display:flex;align-items:center;gap:0.6rem;padding:0.35rem 0;font-size:0.72rem}
+.layer-name{width:80px;color:var(--muted);font-weight:500;flex-shrink:0;text-transform:uppercase;font-size:0.6rem;letter-spacing:0.05em}
+.layer-bar-bg{flex:1;height:6px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden}
+.layer-bar-fill{height:100%;border-radius:3px;transition:width 1s cubic-bezier(0.4,0,0.2,1),background 0.8s}
+.layer-score{width:45px;text-align:right;font-weight:700;font-size:0.7rem}
 
-/* Paper Trading UI */
-.pt-box { background: linear-gradient(145deg, #1a1c26 0%, #11131a 100%); border: 1px solid #32364a; border-radius: 16px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-.pt-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid #252836; padding-bottom: 0.8rem; }
-.pt-title { font-size: 0.8rem; color: #b1b5c4; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.pt-title::before { content: ''; display: inline-block; width: 8px; height: 8px; background: var(--info); border-radius: 50%; box-shadow: 0 0 8px var(--info); }
-.pt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
-.pt-stat { display: flex; flex-direction: column; gap: 0.3rem; }
-.pt-label { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-.pt-value { font-size: 1.4rem; font-weight: 700; font-family: "JetBrains Mono", monospace; }
-.pt-positions { margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #252836; font-family: "JetBrains Mono", monospace; font-size: 0.8rem; color: #a0a5b5; }
+/* Time & Risk Row */
+.status-row{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:1.2rem}
+@media(max-width:600px){.status-row{grid-template-columns:1fr}}
+.status-card{background:var(--surface);backdrop-filter:blur(20px);border:1px solid var(--border);border-radius:16px;padding:1rem 1.2rem}
+.sc-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem}
+.sc-title{font-size:0.6rem;color:var(--info);text-transform:uppercase;letter-spacing:0.15em;font-weight:700}
+.sc-badge{font-size:0.65rem;font-weight:700;padding:0.15rem 0.5rem;border-radius:4px}
+.sc-main{font-size:1.3rem;font-weight:800}
+.sc-sub{font-size:0.7rem;color:var(--muted);margin-top:4px}
+.risk-items{display:flex;gap:1rem;margin-top:0.5rem;flex-wrap:wrap}
+.risk-item{font-size:0.7rem;display:flex;align-items:center;gap:4px}
+.risk-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+
+/* Briefing */
+.briefing-bar{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:0.6rem 1rem;margin-bottom:1.2rem;font-size:0.78rem;display:flex;align-items:center;gap:8px}
+
+/* Paper Trading */
+.pt-box{background:linear-gradient(145deg,rgba(22,25,38,0.9),rgba(12,14,22,0.95));backdrop-filter:blur(20px);border:1px solid var(--border2);border-radius:16px;padding:1.2rem;margin-bottom:1.2rem}
+.pt-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;padding-bottom:0.6rem;border-bottom:1px solid var(--border)}
+.pt-title{font-size:0.7rem;color:var(--cyan);letter-spacing:0.1em;text-transform:uppercase;font-weight:700;display:flex;align-items:center;gap:8px}
+.pt-title::before{content:'';display:inline-block;width:6px;height:6px;background:var(--cyan);border-radius:50%;box-shadow:0 0 8px var(--cyan)}
+.pt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0.8rem}
+.pt-stat{display:flex;flex-direction:column;gap:2px}
+.pt-label{font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em}
+.pt-value{font-size:1.2rem;font-weight:700}
+.pt-positions{margin-top:0.8rem;padding-top:0.6rem;border-top:1px dashed var(--border);font-size:0.75rem;color:#a0a5b5}
+
+/* Legacy Rule List */
+.rule-list{background:var(--surface);backdrop-filter:blur(20px);border:1px solid var(--border);border-radius:16px;padding:1rem;margin-bottom:1.2rem}
+.rule-item{display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:0.78rem}
+.rule-item:last-child{border:none}
+.badge{font-family:"JetBrains Mono",monospace;font-size:0.65rem;font-weight:700;padding:0.15rem 0.5rem;border-radius:4px;min-width:50px;text-align:center}
+.pass{background:rgba(0,232,123,0.12);color:var(--go)}.fail{background:rgba(255,77,106,0.12);color:var(--stop)}
+
+/* Section Title */
+.section-title{font-size:0.6rem;color:var(--info);letter-spacing:0.15em;margin:1.2rem 0 0.6rem;text-transform:uppercase;font-weight:700}
+
+/* Market Grids */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.6rem}
+.card{background:var(--surface);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:12px;padding:0.8rem;transition:all 0.5s}
+.card:hover{border-color:var(--border2);background:var(--surface2)}
+.up{color:var(--go)}.down{color:var(--stop)}
+
+@keyframes flash-up{0%{background:rgba(0,232,123,0.15)}100%{background:var(--surface)}}
+@keyframes flash-down{0%{background:rgba(255,77,106,0.15)}100%{background:var(--surface)}}
+.animate-up{animation:flash-up 0.8s ease-out}.animate-down{animation:flash-down 0.8s ease-out}
+
+/* Regime Badge */
+.regime-badge{display:inline-flex;align-items:center;gap:4px;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.65rem;font-weight:700;letter-spacing:0.05em}
+.regime-trending{background:rgba(0,232,123,0.1);color:var(--go);border:1px solid rgba(0,232,123,0.2)}
+.regime-choppy{background:rgba(255,182,39,0.1);color:var(--warn);border:1px solid rgba(255,182,39,0.2)}
+.regime-breakout{background:rgba(167,139,250,0.1);color:var(--purple);border:1px solid rgba(167,139,250,0.2)}
+.regime-unknown{background:rgba(107,112,132,0.1);color:var(--muted);border:1px solid rgba(107,112,132,0.2)}
 </style>
 </head>
 <body>
 <div class="wrap">
+  <!-- Status Bar -->
   <div class="status-bar">
-    <div style="display:flex; align-items:center; gap:8px"><div class="pulse-dot"></div><span>BOT LIVE</span></div>
-    <div style="color:var(--muted)">SYNC: <span id="syncTime">--</span> | LATENCY: <span id="latency">--</span></div>
+    <div style="display:flex;align-items:center;gap:8px"><div class="pulse-dot"></div><span class="mono" style="font-weight:700">SPY 0DTE SIGNAL MACHINE</span></div>
+    <div style="color:var(--muted)" class="mono">SYNC: <span id="syncTime">--</span> | <span id="latency">--</span></div>
   </div>
-  <div class="verdict-box">
-    <div id="vMain">LOADING</div>
-    <div id="vReason">Connecting...</div>
+
+  <!-- Score Gauge + Info Panel -->
+  <div class="gauge-section">
+    <div class="gauge-card">
+      <div class="gauge-wrap">
+        <svg viewBox="0 0 200 200" width="180" height="180">
+          <circle cx="100" cy="100" r="85" class="gauge-bg"/>
+          <circle cx="100" cy="100" r="85" class="gauge-fill" id="gaugeFill"
+            stroke-dasharray="534" stroke-dashoffset="534"/>
+        </svg>
+        <div class="gauge-center">
+          <div class="gauge-score mono" id="scoreNum">--</div>
+          <div class="gauge-label">SIGNAL SCORE</div>
+        </div>
+      </div>
+      <div class="signal-badge mono" id="signalBadge">LOADING</div>
+    </div>
+
+    <div class="info-panel">
+      <!-- Direction Bias -->
+      <div class="direction-box">
+        <div class="dir-indicator" id="dirIndicator">--</div>
+        <div class="dir-meta">
+          <div class="label">Direction Bias</div>
+          <div class="value" id="dirDetail">Calculating...</div>
+        </div>
+        <div id="regimeBadge" class="regime-badge regime-unknown">--</div>
+      </div>
+
+      <!-- Layer Breakdown -->
+      <div class="layers-box">
+        <div style="font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.15em;font-weight:700;margin-bottom:0.5rem">Layer Breakdown</div>
+        <div id="layerBars"></div>
+      </div>
+    </div>
   </div>
-  
-  <div class="pt-box" id="paperTradingWidget" style="display: none;">
+
+  <!-- Time Window + Risk Status -->
+  <div class="status-row">
+    <div class="status-card">
+      <div class="sc-header">
+        <span class="sc-title">⏱ Time Window</span>
+        <span class="sc-badge mono" id="twBadge">--</span>
+      </div>
+      <div class="sc-main" id="twMain">--</div>
+      <div class="sc-sub" id="twSub">--</div>
+    </div>
+    <div class="status-card">
+      <div class="sc-header">
+        <span class="sc-title">🛡 Risk Status</span>
+        <span class="sc-badge mono" id="riskBadge">--</span>
+      </div>
+      <div class="risk-items" id="riskItems">--</div>
+    </div>
+  </div>
+
+  <!-- Briefing -->
+  <div class="briefing-bar" id="briefing">Connecting to signal engine...</div>
+
+  <!-- Paper Trading -->
+  <div class="pt-box" id="paperTradingWidget" style="display:none">
     <div class="pt-header">
       <div class="pt-title">Paper Trading Bot</div>
-      <div id="ptReturn" class="badge" style="font-size: 0.8rem;">--</div>
+      <div id="ptReturn" class="badge">--</div>
     </div>
     <div class="pt-grid">
-      <div class="pt-stat">
-        <span class="pt-label">Account Value</span>
-        <span class="pt-value" id="ptValue">--</span>
-      </div>
-      <div class="pt-stat">
-        <span class="pt-label">Target Asset</span>
-        <span class="pt-value" style="color: var(--info)">SPY</span>
-      </div>
-      <div class="pt-stat">
-        <span class="pt-label">Available Cash</span>
-        <span class="pt-value" id="ptCash">--</span>
-      </div>
+      <div class="pt-stat"><span class="pt-label">Account Value</span><span class="pt-value mono" id="ptValue">--</span></div>
+      <div class="pt-stat"><span class="pt-label">Target</span><span class="pt-value" style="color:var(--cyan)">SPY 0DTE</span></div>
+      <div class="pt-stat"><span class="pt-label">Cash</span><span class="pt-value mono" id="ptCash">--</span></div>
     </div>
-    <div class="pt-positions" id="ptPositions">No active positions.</div>
+    <div class="pt-positions mono" id="ptPositions">No active positions.</div>
   </div>
+
+  <!-- Legacy Compliance -->
   <div class="rule-list">
-    <div class="section-title">Compliance Checklist</div>
-    <div class="rule-item"><span>VIX (14+)</span><div><span id="vixVal" style="font-weight:700; margin-right:10px;">--</span><span id="vixBadge" class="badge">--</span></div></div>
-    <div class="rule-item"><span>Range ($3+)</span><div><span id="rangeVal" style="font-weight:700; margin-right:10px;">--</span><span id="rangeBadge" class="badge">--</span></div></div>
-    <div class="rule-item"><span>Window</span><div><span id="winVal" style="font-weight:700; margin-right:10px;">--</span><span id="winBadge" class="badge">--</span></div></div>
-    <div class="rule-item"><span>VWAP Dist.</span><div><span id="vwapVal" style="font-weight:700; margin-right:10px;">--</span><span id="vwapBadge" class="badge">--</span></div></div>
-    <div class="rule-item"><span>Volume (1.5x)</span><div><span id="volVal" style="font-weight:700; margin-right:10px;">--</span><span id="volBadge" class="badge">--</span></div></div>
-    <div class="rule-item"><span>Sector Sync</span><div><span id="sectorVal" style="font-weight:700; margin-right:10px;">--</span><span id="sectorBadge" class="badge">--</span></div></div>
+    <div class="section-title">Compliance Checklist (Legacy)</div>
+    <div class="rule-item"><span>VIX (14+)</span><div><span id="vixVal" class="mono" style="font-weight:700;margin-right:10px">--</span><span id="vixBadge" class="badge">--</span></div></div>
+    <div class="rule-item"><span>Range ($3+)</span><div><span id="rangeVal" class="mono" style="font-weight:700;margin-right:10px">--</span><span id="rangeBadge" class="badge">--</span></div></div>
+    <div class="rule-item"><span>Window</span><div><span id="winVal" class="mono" style="font-weight:700;margin-right:10px">--</span><span id="winBadge" class="badge">--</span></div></div>
+    <div class="rule-item"><span>VWAP Dist.</span><div><span id="vwapVal" class="mono" style="font-weight:700;margin-right:10px">--</span><span id="vwapBadge" class="badge">--</span></div></div>
+    <div class="rule-item"><span>Volume (1.5x)</span><div><span id="volVal" class="mono" style="font-weight:700;margin-right:10px">--</span><span id="volBadge" class="badge">--</span></div></div>
+    <div class="rule-item"><span>Sector Sync</span><div><span id="sectorVal" class="mono" style="font-weight:700;margin-right:10px">--</span><span id="sectorBadge" class="badge">--</span></div></div>
   </div>
+
+  <!-- Market Data -->
   <div class="section-title">Major Indices</div>
   <div id="indicesGrid" class="grid"></div>
   <div class="section-title">Magnificent 7</div>
@@ -95,111 +202,181 @@ body { background: var(--bg); color: var(--text); font-family: "DM Sans", sans-s
   <div class="section-title">Alpha Watchlist</div>
   <div id="gmeGrid" class="grid"></div>
 </div>
+
 <script>
 let lastPrices = {};
+const CIRC = 2 * Math.PI * 85; // ~534
+
+function getScoreColor(score) {
+  if (score >= 90) return 'var(--go)';
+  if (score >= 75) return 'var(--warn)';
+  if (score >= 60) return '#f5a623';
+  return 'var(--stop)';
+}
+
+function renderLayerBars(layers) {
+  const defs = [
+    {key:'regime', name:'Regime', max:40},
+    {key:'correlation', name:'Correlat.', max:20},
+    {key:'time_window', name:'Time Win', max:20},
+    {key:'technical', name:'Technical', max:30},
+  ];
+  const el = document.getElementById('layerBars');
+  el.innerHTML = defs.map(d => {
+    const l = layers?.[d.key];
+    const score = l?.score ?? 0;
+    const pct = Math.max(0, Math.min(100, (score / d.max) * 100));
+    const color = pct >= 70 ? 'var(--go)' : pct >= 40 ? 'var(--warn)' : 'var(--stop)';
+    return `<div class="layer-row">
+      <span class="layer-name">${d.name}</span>
+      <div class="layer-bar-bg"><div class="layer-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+      <span class="layer-score mono" style="color:${color}">${score}/${d.max}</span>
+    </div>`;
+  }).join('');
+}
 
 function render(py) {
-  document.getElementById("syncTime").textContent = py.last_updated + " ET";
-  document.getElementById("latency").textContent = py.latency_ms + "ms";
-  
-  const vm = document.getElementById("vMain");
-  vm.textContent = py.verdict;
-  if (py.verdict === "STRONG GO") vm.style.color = "var(--go)";
-  else if (py.verdict === "STOP") vm.style.color = "var(--stop)";
-  else vm.style.color = "var(--warn)";
+  document.getElementById('syncTime').textContent = py.last_updated + ' ET';
+  document.getElementById('latency').textContent = py.latency_ms + 'ms';
 
-  // Update reason text
-  const vr = document.getElementById("vReason");
-  if (py.reason) vr.textContent = py.reason;
-  else if (py.briefing) vr.textContent = py.briefing;
-  else vr.textContent = py.fetch_status || "Connected";
+  // Score Gauge
+  const score = py.total_score ?? py.confidence ?? 0;
+  const color = py.signal?.color || getScoreColor(score);
+  const fill = document.getElementById('gaugeFill');
+  const offset = CIRC - (CIRC * Math.min(score, 100) / 100);
+  fill.style.strokeDashoffset = offset;
+  fill.style.stroke = color;
+  document.getElementById('scoreNum').textContent = score;
+  document.getElementById('scoreNum').style.color = color;
 
-  // 규칙 검사 매핑
-  const ruleMap = { vix: "vix", range: "range", window: "win", vwap: "vwap", vol: "vol", sector: "sector" };
+  // Signal Badge
+  const badge = document.getElementById('signalBadge');
+  const sig = py.signal || {};
+  badge.textContent = (sig.emoji || '') + ' ' + (sig.label || py.verdict || '--');
+  badge.style.color = color;
+  badge.style.borderColor = color;
+  badge.style.background = color.replace(')', ',0.1)').replace('var(','rgba(').replace('rgb(','rgba(') || 'rgba(255,255,255,0.05)';
+
+  // Direction Bias
+  const dir = py.direction_bias || 'NEUTRAL';
+  const dirEl = document.getElementById('dirIndicator');
+  dirEl.textContent = dir;
+  dirEl.style.color = dir === 'CALL' ? 'var(--go)' : dir === 'PUT' ? 'var(--stop)' : 'var(--muted)';
+  document.getElementById('dirDetail').textContent = sig.action || py.reason || '--';
+
+  // Regime Badge
+  const regime = py.layers?.regime?.regime || 'UNKNOWN';
+  const rb = document.getElementById('regimeBadge');
+  rb.textContent = regime;
+  rb.className = 'regime-badge regime-' + regime.toLowerCase();
+
+  // Layer Bars
+  renderLayerBars(py.layers);
+
+  // Time Window
+  const tw = py.layers?.time_window;
+  if (tw) {
+    document.getElementById('twMain').textContent = tw.emoji + ' ' + tw.window;
+    const twBadge = document.getElementById('twBadge');
+    twBadge.textContent = tw.current_time || '--';
+    if (tw.next_window) {
+      document.getElementById('twSub').textContent = 'Next: ' + tw.next_window.emoji + ' ' + tw.next_window.window + ' in ' + tw.next_window.countdown;
+      twBadge.className = 'sc-badge mono ' + (tw.score >= 15 ? 'pass' : 'fail');
+    } else {
+      document.getElementById('twSub').textContent = tw.description || '--';
+      twBadge.className = 'sc-badge mono ' + (tw.score >= 15 ? 'pass' : 'fail');
+    }
+  }
+
+  // Risk Status
+  const risk = py.layers?.risk;
+  if (risk) {
+    const rb2 = document.getElementById('riskBadge');
+    rb2.textContent = risk.lockout ? 'LOCKED' : 'OK';
+    rb2.className = 'sc-badge mono ' + (risk.lockout ? 'fail' : 'pass');
+    document.getElementById('riskItems').innerHTML =
+      `<div class="risk-item"><div class="risk-dot" style="background:${(risk.strikes_remaining??3)>1?'var(--go)':'var(--stop)'}"></div>Strikes: ${risk.strikes_remaining??3}/3</div>` +
+      `<div class="risk-item"><div class="risk-dot" style="background:${(risk.trades_remaining??3)>0?'var(--go)':'var(--warn)'}"></div>Trades: ${risk.trades_remaining??3}/3</div>` +
+      `<div class="risk-item"><div class="risk-dot" style="background:${(risk.daily_drawdown??0)<4?'var(--go)':'var(--stop)'}"></div>DD: ${(risk.daily_drawdown??0).toFixed(1)}%</div>`;
+  }
+
+  // Briefing
+  document.getElementById('briefing').textContent = py.briefing || '--';
+
+  // Legacy Rules
+  const ruleMap = {vix:'vix',range:'range',window:'win',vwap:'vwap',vol:'vol',sector:'sector'};
   Object.keys(ruleMap).forEach(key => {
     const htmlId = ruleMap[key];
-    const rule = py.rules ? py.rules[key] : null;
-    document.getElementById(htmlId + "Val").textContent = rule?.val || "--";
-    const b = document.getElementById(htmlId + "Badge");
-    b.textContent = rule?.ok ? "PASS" : "FAIL";
-    b.className = "badge " + (rule?.ok ? "pass" : "fail");
+    const rule = py.rules?.[key];
+    document.getElementById(htmlId+'Val').textContent = rule?.val || '--';
+    const b = document.getElementById(htmlId+'Badge');
+    b.textContent = rule?.ok ? 'PASS' : 'FAIL';
+    b.className = 'badge ' + (rule?.ok ? 'pass' : 'fail');
   });
 
-  // 그리드 렌더링 함수
+  // Market Grids
   const renderGrid = (id, data) => {
     if(!data) return;
     const grid = document.getElementById(id);
     grid.innerHTML = Object.entries(data).map(([sym, d]) => {
+      if (!d || d.price == null) return '';
       const p = d.price; const old = lastPrices[sym];
-      let anim = ""; if(old && p > old) anim="animate-up"; else if(old && p < old) anim="animate-down";
+      let anim=''; if(old && p>old) anim='animate-up'; else if(old && p<old) anim='animate-down';
       lastPrices[sym] = p;
-      return `<div class="card ${anim}"><div style="font-size:0.65rem; color:var(--muted)">${sym}</div>
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.4rem">
-        <span style="font-weight:700; font-family:'JetBrains Mono'">$${p.toFixed(2)}</span>
-        <span class="${d.pct>=0?'up':'down'}" style="font-size:0.85rem; font-weight:700">${(d.pct>=0?'+':'')+d.pct.toFixed(2)}%</span></div></div>`;
-    }).join("");
+      return `<div class="card ${anim}"><div style="font-size:0.6rem;color:var(--muted)">${sym}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.3rem">
+        <span class="mono" style="font-weight:700">$${p.toFixed(2)}</span>
+        <span class="${d.pct>=0?'up':'down'}" style="font-size:0.8rem;font-weight:700">${(d.pct>=0?'+':'')+d.pct.toFixed(2)}%</span></div></div>`;
+    }).join('');
   };
-  
-  renderGrid("indicesGrid", py.indices); 
-  renderGrid("mag7Grid", py.mag7);
-  renderGrid("gmeGrid", py.gme_data || py.special_watch);
+  renderGrid('indicesGrid', py.indices);
+  renderGrid('mag7Grid', py.mag7);
+  renderGrid('gmeGrid', py.gme_data || py.special_watch);
 
-  // Paper Trading UI
+  // Paper Trading
   if (py.paper_trading) {
-    document.getElementById("paperTradingWidget").style.display = "block";
+    document.getElementById('paperTradingWidget').style.display = 'block';
     const pt = py.paper_trading;
-    document.getElementById("ptValue").textContent = "$" + pt.current_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    document.getElementById("ptCash").textContent = "$" + pt.cash.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    
-    const retBadge = document.getElementById("ptReturn");
-    const retPct = pt.total_return_pct;
-    retBadge.textContent = (retPct >= 0 ? "+" : "") + retPct.toFixed(2) + "% All Time";
-    retBadge.className = "badge " + (retPct >= 0 ? "pass" : "fail");
-
-    let posHtml = "";
+    document.getElementById('ptValue').textContent = '$' + (pt.current_value||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    document.getElementById('ptCash').textContent = '$' + (pt.cash||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const retBadge = document.getElementById('ptReturn');
+    const retPct = pt.total_return_pct || 0;
+    retBadge.textContent = (retPct>=0?'+':'') + retPct.toFixed(2) + '% All Time';
+    retBadge.className = 'badge ' + (retPct>=0?'pass':'fail');
+    let posHtml = '';
     if (pt.positions) {
       Object.entries(pt.positions).forEach(([sym, data]) => {
         if (data.shares > 0) {
-          let currentP = 0;
-          if (py.indices && py.indices[sym]) currentP = py.indices[sym].price;
-          else if (py.mag7 && py.mag7[sym]) currentP = py.mag7[sym].price;
-          
-          let pnlStr = "";
+          let currentP = py.indices?.[sym]?.price || py.mag7?.[sym]?.price || 0;
+          let pnlStr = '';
           if (currentP > 0) {
-             const pnl = (currentP - data.avg_price) * data.shares;
-             const pnlPct = ((currentP / data.avg_price) - 1) * 100;
-             const clr = pnl >= 0 ? "var(--go)" : "var(--stop)";
-             const sign = pnl >= 0 ? "+" : "";
-             pnlStr = ` | PnL: <span style="color:${clr}">${sign}$${pnl.toFixed(2)} (${sign}${pnlPct.toFixed(2)}%)</span>`;
+            const pnl = (currentP - data.avg_price) * data.shares;
+            const pnlPct = ((currentP / data.avg_price) - 1) * 100;
+            const clr = pnl >= 0 ? 'var(--go)' : 'var(--stop)';
+            pnlStr = ` | PnL: <span style="color:${clr}">${pnl>=0?'+':''}$${pnl.toFixed(2)} (${pnl>=0?'+':''}${pnlPct.toFixed(2)}%)</span>`;
           }
-          posHtml += `<div>[HOLDING] ${data.shares}x ${sym} @ $${data.avg_price.toFixed(2)}${pnlStr}</div>`;
+          posHtml += `<div>[HOLD] ${data.shares}x ${sym} @ $${data.avg_price.toFixed(2)}${pnlStr}</div>`;
         }
       });
     }
-    document.getElementById("ptPositions").innerHTML = posHtml || "No active positions.";
+    document.getElementById('ptPositions').innerHTML = posHtml || 'No active positions.';
   }
 }
 
-// 자동 새로고침 및 실제 레이턴시 측정 로직
 async function loadData() {
-  const fetchStart = performance.now();
-  try { 
-    // Vercel: /api/data 서버리스 함수 우선, 실패 시 data.json 폴백
-    let r = await fetch("/api/data", {cache: "no-store"});
-    if (!r.ok) r = await fetch("data.json", {cache: "no-store"});
-    if(r.ok) {
+  const t0 = performance.now();
+  try {
+    let r = await fetch('/api/data', {cache:'no-store'});
+    if (!r.ok) r = await fetch('data.json', {cache:'no-store'});
+    if (r.ok) {
       const data = await r.json();
-      data.latency_ms = Math.round((data.latency_ms || 0) + (performance.now() - fetchStart)); 
-      render(data); 
-    } 
-  } catch(e) {
-    console.error("Data fetch error:", e);
-  }
+      data.latency_ms = Math.round((data.latency_ms||0) + (performance.now()-t0));
+      render(data);
+    }
+  } catch(e) { console.error('Fetch error:', e); }
   setTimeout(loadData, 15000);
 }
-
 loadData();
 </script>
 </body>
 </html>
-
