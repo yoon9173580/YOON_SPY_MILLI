@@ -1,63 +1,97 @@
 """
 Vercel Serverless API — /api/data
 SPY 0DTE Signal Machine — 7-Layer Score Engine
+Hybrid: Alpaca (stocks) + yfinance (VIX fallback)
 """
-import math
+import math, json, os, time, traceback
 from http.server import BaseHTTPRequestHandler
-import json
-import os
-import time
-from datetime import datetime
-import pytz
-import yfinance as yf
+from datetime import datetime, timedelta
+import pytz, requests
 import pandas as pd
+import numpy as np
 
 NY = pytz.timezone("America/New_York")
 STARTING_BALANCE = 2000.0
 
+ALPACA_DATA_URL = "https://data.alpaca.markets"
+ALPACA_HEADERS = {
+    "APCA-API-KEY-ID": os.getenv("APCA_API_KEY_ID", ""),
+    "APCA-API-SECRET-KEY": os.getenv("APCA_API_SECRET_KEY", ""),
+}
 
-def safe_float(val, default=0.0):
-    """Safely convert yfinance values to float, handling NA/NaN/None."""
-    if val is None:
-        return default
-    try:
-        if pd.isna(val):
-            return default
-    except (TypeError, ValueError):
-        pass
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
-
-
-import numpy as np
 
 class SafeEncoder(json.JSONEncoder):
-    """JSON encoder that handles pandas/numpy types safely."""
     def default(self, obj):
         try:
-            if pd.isna(obj):
-                return None
-        except (TypeError, ValueError):
-            pass
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
+            if pd.isna(obj): return None
+        except (TypeError, ValueError): pass
+        if isinstance(obj, (np.integer,)): return int(obj)
         if isinstance(obj, (np.floating,)):
-            if np.isnan(obj) or np.isinf(obj):
-                return None
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, (np.bool_,)):
-            return bool(obj)
-        if isinstance(obj, pd.Timestamp):
-            return str(obj)
+            return None if (np.isnan(obj) or np.isinf(obj)) else float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, (np.bool_,)): return bool(obj)
+        if isinstance(obj, pd.Timestamp): return str(obj)
         return super().default(obj)
 
 
-# ── Inline Engine (Vercel can't import local modules easily) ────────
-# Simplified versions of the engine layers for serverless deployment
+# ── Alpaca Data Fetchers ────────────────────────────────────────────
+
+def _alpaca_snapshots(symbols):
+    """Fetch latest snapshots for multiple stock symbols."""
+    url = f"{ALPACA_DATA_URL}/v2/stocks/snapshots"
+    r = requests.get(url, headers=ALPACA_HEADERS,
+                     params={"symbols": ",".join(symbols), "feed": "iex"}, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def _alpaca_bars(symbol, timeframe="5Min"):
+    """Fetch intraday bars for technical analysis."""
+    now = datetime.now(NY)
+    start = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    url = f"{ALPACA_DATA_URL}/v2/stocks/{symbol}/bars"
+    r = requests.get(url, headers=ALPACA_HEADERS, params={
+        "timeframe": timeframe, "start": start.isoformat(),
+        "limit": 1000, "adjustment": "raw", "feed": "iex",
+    }, timeout=10)
+    r.raise_for_status()
+    bars = r.json().get("bars", [])
+    if not bars: return pd.DataFrame()
+    df = pd.DataFrame(bars)
+    df = df.rename(columns={"o": "Open", "h": "High", "l": "Low",
+                             "c": "Close", "v": "Volume", "t": "Timestamp"})
+    return df
+
+
+def _vix_fallback():
+    """Fetch VIX/VIX3M from yfinance (Alpaca doesn't provide CBOE indices)."""
+    import yfinance as yf
+    vix_p, vix3m_p = 18.0, None
+    try:
+        v = yf.Ticker("^VIX").fast_info.last_price
+        if v is not None and not pd.isna(v): vix_p = float(v)
+    except: pass
+    try:
+        v = yf.Ticker("^VIX3M").fast_info.last_price
+        if v is not None and not pd.isna(v): vix3m_p = float(v)
+    except: pass
+    return vix_p, vix3m_p
+
+
+def _snap_price(snap, key="latestTrade"):
+    """Extract price from an Alpaca snapshot safely."""
+    try: return float(snap[key]["p"])
+    except: return 0.0
+
+def _snap_prev_close(snap):
+    try: return float(snap["prevDailyBar"]["c"])
+    except: return 0.0
+
+def _pct(price, prev):
+    return ((price / prev) - 1) * 100 if prev > 0 else 0.0
+
+
+# ── Scoring Engine (unchanged) ─────────────────────────────────────
 
 def _score_vix(vix_price):
     if vix_price is None: return 0, "VIX N/A"
@@ -66,13 +100,11 @@ def _score_vix(vix_price):
     elif vix_price > 30: return -20, f"VIX {vix_price:.1f} — FEAR"
     else: return -5, f"VIX {vix_price:.1f} — Low"
 
-
 def _score_vix_term(vix, vix3m):
     if vix is None or vix3m is None: return 0, 0, "Term N/A"
     spread = vix - vix3m
     if spread < 0: return 10, spread, f"Contango ({spread:+.2f})"
     else: return -15, spread, f"Backwardation ({spread:+.2f})"
-
 
 def _calc_adx(hist, period=14):
     if hist is None or len(hist) < period + 1: return None
@@ -89,7 +121,6 @@ def _calc_adx(hist, period=14):
         return float(adx.iloc[-1]) if not adx.empty else None
     except: return None
 
-
 def _calc_rsi(hist, period=14):
     if hist is None or len(hist) < period + 1: return None
     try:
@@ -101,7 +132,6 @@ def _calc_rsi(hist, period=14):
         last = rsi.dropna()
         return float(last.iloc[-1]) if not last.empty else None
     except: return None
-
 
 def _time_window(now_et):
     h, m = now_et.hour, now_et.minute
@@ -133,142 +163,67 @@ def _time_window(now_et):
             "description": "Market closed", "next_window": None, "is_blocked": False,
             "current_time": now_et.strftime("%H:%M")}
 
-
 def _signal_grade(score):
     if score >= 90: return {"grade": "STRONG", "label": "STRONG SIGNAL", "emoji": "🟢", "action": "Full position", "color": "#3dd68c"}
     elif score >= 75: return {"grade": "MODERATE", "label": "MODERATE SIGNAL", "emoji": "🟡", "action": "Half position", "color": "#f5c451"}
     elif score >= 60: return {"grade": "WEAK", "label": "STANDBY", "emoji": "🟠", "action": "Monitor only", "color": "#f5a623"}
     else: return {"grade": "NONE", "label": "NO SIGNAL", "emoji": "🔴", "action": "No entry", "color": "#f07178"}
 
-
 def _calculate_strike_recommendation(spy_price, direction_bias, signal_grade,
                                       vix_price, vwap, normalized_score,
                                       portfolio_cash, now_et):
-    """
-    Calculate the recommended option strike to trade.
-    Returns a dict with strike details, premium estimates, and risk params.
-    """
     if spy_price is None or direction_bias == "NEUTRAL" or signal_grade in ("NONE",):
         return {"active": False, "reason": "No actionable signal"}
-
     atm_strike = round(spy_price)
-
-    if signal_grade == "STRONG":
-        otm_offset = 0
-        strike_reasoning = "ATM — high conviction, all conditions met"
-    elif signal_grade == "MODERATE":
-        otm_offset = 1
-        strike_reasoning = "OTM-1 — balanced cost/probability"
-    else:
-        otm_offset = 2
-        strike_reasoning = "OTM-2 — monitor zone, low cost entry"
-
+    if signal_grade == "STRONG": otm_offset, strike_reasoning = 0, "ATM — high conviction"
+    elif signal_grade == "MODERATE": otm_offset, strike_reasoning = 1, "OTM-1 — balanced cost/probability"
+    else: otm_offset, strike_reasoning = 2, "OTM-2 — monitor zone"
     if direction_bias == "CALL":
         recommended_strike = atm_strike + otm_offset
-        otm_1 = atm_strike + 1
-        otm_2 = atm_strike + 2
-        contract_type = "C"
-        type_label = "CALL"
+        otm_1, otm_2 = atm_strike + 1, atm_strike + 2
+        contract_type, type_label = "C", "CALL"
     else:
         recommended_strike = atm_strike - otm_offset
-        otm_1 = atm_strike - 1
-        otm_2 = atm_strike - 2
-        contract_type = "P"
-        type_label = "PUT"
-
+        otm_1, otm_2 = atm_strike - 1, atm_strike - 2
+        contract_type, type_label = "P", "PUT"
     contract_label = f"SPY ${recommended_strike}{contract_type} 0DTE"
-
-    # Try real option chain from yfinance
-    real_bid, real_ask, real_last, chain_success = None, None, None, False
-    try:
-        spy_ticker = yf.Ticker("SPY")
-        exp_dates = spy_ticker.options
-        today_str = now_et.strftime("%Y-%m-%d")
-        target_exp = None
-        for exp in exp_dates:
-            if exp >= today_str:
-                target_exp = exp
-                break
-        if target_exp:
-            chain = spy_ticker.option_chain(target_exp)
-            opt_df = chain.calls if direction_bias == "CALL" else chain.puts
-            match = opt_df[opt_df["strike"] == float(recommended_strike)]
-            if not match.empty:
-                row = match.iloc[0]
-                real_bid = float(row.get("bid", 0))
-                real_ask = float(row.get("ask", 0))
-                real_last = float(row.get("lastPrice", 0))
-                chain_success = True
-    except:
-        pass
-
-    if chain_success and real_bid and real_ask and real_bid > 0:
-        est_premium_low = round(real_bid, 2)
-        est_premium_high = round(real_ask, 2)
-        mid_premium = round((real_bid + real_ask) / 2, 2)
-        data_source = "LIVE"
-    else:
-        vix_val = vix_price if vix_price else 18.0
-        time_factor = math.sqrt(1.0 / 365.0)
-        atm_est = spy_price * (vix_val / 100.0) * time_factor * 0.5
-        otm_discount = max(0.3, 1.0 - (otm_offset * 0.25))
-        mid_premium = round(atm_est * otm_discount, 2)
-        est_premium_low = round(mid_premium * 0.85, 2)
-        est_premium_high = round(mid_premium * 1.15, 2)
-        data_source = "ESTIMATED"
-
-    mid_premium = max(mid_premium, 0.05)
-    est_premium_low = max(est_premium_low, 0.01)
-    est_premium_high = max(est_premium_high, 0.10)
-
-    target_pct = 50
-    stop_pct = 30
+    # Estimate premium from VIX
+    vix_val = vix_price if vix_price else 18.0
+    time_factor = math.sqrt(1.0 / 365.0)
+    atm_est = spy_price * (vix_val / 100.0) * time_factor * 0.5
+    otm_discount = max(0.3, 1.0 - (otm_offset * 0.25))
+    mid_premium = max(round(atm_est * otm_discount, 2), 0.05)
+    est_premium_low = max(round(mid_premium * 0.85, 2), 0.01)
+    est_premium_high = max(round(mid_premium * 1.15, 2), 0.10)
+    data_source = "ESTIMATED"
+    target_pct, stop_pct = 50, 30
     target_price = round(mid_premium * 1.5, 2)
     stop_price = round(mid_premium * 0.7, 2)
-
     risk_per = round(mid_premium * (stop_pct / 100.0), 2)
     reward_per = round(mid_premium * (target_pct / 100.0), 2)
     rr_ratio = round(reward_per / risk_per, 2) if risk_per > 0 else 0
-
     max_risk_pct = 10.0
     max_risk_dollars = round(portfolio_cash * (max_risk_pct / 100.0), 2)
     cost_per_contract = round(mid_premium * 100, 2)
     max_contracts = max(1, int(max_risk_dollars / cost_per_contract)) if cost_per_contract > 0 else 0
-
-    strikes = [
-        {"label": "ATM", "strike": atm_strike, "recommended": otm_offset == 0},
-        {"label": "OTM-1", "strike": otm_1, "recommended": otm_offset == 1},
-        {"label": "OTM-2", "strike": otm_2, "recommended": otm_offset == 2},
-    ]
-
     return {
-        "active": True,
-        "direction": type_label,
-        "atm_strike": atm_strike,
-        "recommended_strike": recommended_strike,
-        "otm_offset": otm_offset,
-        "contract_label": contract_label,
-        "contract_type": contract_type,
-        "strikes": strikes,
-        "est_premium_low": est_premium_low,
-        "est_premium_high": est_premium_high,
-        "mid_premium": mid_premium,
-        "data_source": data_source,
-        "real_bid": real_bid,
-        "real_ask": real_ask,
-        "real_last": real_last,
-        "target_pct": target_pct,
-        "stop_pct": stop_pct,
-        "target_price": target_price,
-        "stop_price": stop_price,
-        "risk_reward": f"1:{rr_ratio}",
-        "max_contracts": max_contracts,
-        "cost_per_contract": cost_per_contract,
-        "max_risk_dollars": max_risk_dollars,
-        "max_risk_pct": max_risk_pct,
-        "reasoning": strike_reasoning,
+        "active": True, "direction": type_label, "atm_strike": atm_strike,
+        "recommended_strike": recommended_strike, "otm_offset": otm_offset,
+        "contract_label": contract_label, "contract_type": contract_type,
+        "strikes": [
+            {"label": "ATM", "strike": atm_strike, "recommended": otm_offset == 0},
+            {"label": "OTM-1", "strike": otm_1, "recommended": otm_offset == 1},
+            {"label": "OTM-2", "strike": otm_2, "recommended": otm_offset == 2},
+        ],
+        "est_premium_low": est_premium_low, "est_premium_high": est_premium_high,
+        "mid_premium": mid_premium, "data_source": data_source,
+        "real_bid": None, "real_ask": None, "real_last": None,
+        "target_pct": target_pct, "stop_pct": stop_pct,
+        "target_price": target_price, "stop_price": stop_price,
+        "risk_reward": f"1:{rr_ratio}", "max_contracts": max_contracts,
+        "cost_per_contract": cost_per_contract, "max_risk_dollars": max_risk_dollars,
+        "max_risk_pct": max_risk_pct, "reasoning": strike_reasoning,
     }
-
 
 def load_portfolio():
     try:
@@ -279,51 +234,50 @@ def load_portfolio():
             "initial_balance": STARTING_BALANCE, "current_value": STARTING_BALANCE, "total_return_pct": 0.0}
 
 
+# ── Handler ─────────────────────────────────────────────────────────
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         start_time = time.perf_counter()
         now = datetime.now(NY)
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
 
-        INDICES = {"SPY": "S&P 500", "QQQ": "Nasdaq 100", "DIA": "Dow 30", "IWM": "Russell 2000", "^VIX": "VIX"}
+        STOCK_SYMS = ["SPY", "QQQ", "DIA", "IWM"]
         MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
         GME_STOCK = ["GME"]
+        ALL_STOCKS = STOCK_SYMS + MAG7 + GME_STOCK
 
         try:
-            all_syms = list(INDICES.keys()) + MAG7 + GME_STOCK + ["^VIX3M"]
-            tickers = yf.Tickers(" ".join(all_syms))
+            # ── FETCH: Alpaca snapshots (all stocks in one call) ──
+            snaps = _alpaca_snapshots(ALL_STOCKS)
 
-            spy = tickers.tickers["SPY"]
-            spy_p = safe_float(spy.fast_info.last_price)
-            spy_prev = safe_float(spy.fast_info.previous_close, default=spy_p)
-            vix_p = safe_float(tickers.tickers["^VIX"].fast_info.last_price, default=18.0)
+            spy_p = _snap_price(snaps.get("SPY", {}))
+            spy_prev = _snap_prev_close(snaps.get("SPY", {})) or spy_p
 
-            # VIX3M
-            vix3m_p = None
-            try: vix3m_p = safe_float(tickers.tickers["^VIX3M"].fast_info.last_price, default=None)
-            except: pass
+            # ── FETCH: Alpaca 5-min bars for SPY ──
+            spy_h = _alpaca_bars("SPY", "5Min")
 
-            # SPY 5-min history
-            spy_h = spy.history(period="1d", interval="5m", prepost=True)
+            # ── FETCH: VIX from yfinance fallback ──
+            vix_p, vix3m_p = _vix_fallback()
+
+            # ── Percentage changes from snapshots ──
+            pcts_data = {}
+            for sym in STOCK_SYMS:
+                s = snaps.get(sym, {})
+                pcts_data[sym] = _pct(_snap_price(s), _snap_prev_close(s) or 1)
+
+            # ── Compute VWAP / volume / range from bars ──
             vwap, vol_r, d_range = 0.0, 0.0, 0.0
             if not spy_h.empty:
                 tp = (spy_h["High"] + spy_h["Low"] + spy_h["Close"]) / 3.0
                 cum_vol = spy_h["Volume"].cumsum().replace(0, pd.NA)
-                vwap = safe_float(((spy_h["Volume"] * tp).cumsum() / cum_vol).iloc[-1])
+                vwap_s = (spy_h["Volume"] * tp).cumsum() / cum_vol
+                if not vwap_s.empty and pd.notna(vwap_s.iloc[-1]):
+                    vwap = float(vwap_s.iloc[-1])
                 vol_sma = spy_h["Volume"].rolling(window=20).mean()
                 if not vol_sma.empty and pd.notna(vol_sma.iloc[-1]) and vol_sma.iloc[-1] > 0:
-                    vol_r = safe_float(spy_h["Volume"].iloc[-1] / vol_sma.iloc[-1])
-                d_range = safe_float(spy_h["High"].max() - spy_h["Low"].min())
-
-            # ── Percentage Changes ──
-            pcts_data = {}
-            for sym in ["SPY", "QQQ", "IWM", "DIA"]:
-                try:
-                    t = tickers.tickers[sym]
-                    lp = safe_float(t.fast_info.last_price)
-                    pc = safe_float(t.fast_info.previous_close, default=lp)
-                    pcts_data[sym] = ((lp / pc) - 1) * 100 if pc > 0 else 0
-                except: pcts_data[sym] = 0
+                    vol_r = float(spy_h["Volume"].iloc[-1] / vol_sma.iloc[-1])
+                d_range = float(spy_h["High"].max() - spy_h["Low"].min())
 
             # ── LAYER 2: Regime ──
             vix_score, vix_detail = _score_vix(vix_p)
@@ -333,12 +287,9 @@ class handler(BaseHTTPRequestHandler):
             gap_pct = ((spy_p / spy_prev) - 1) * 100 if spy_prev else 0
             gap_score = 5 if abs(gap_pct) > 0.5 else 0
             regime_total = vix_score + term_score + adx_score + gap_score
-
-            # Classify regime
             if adx_val and adx_val >= 25: regime_label = "TRENDING"
             elif adx_val and adx_val < 20: regime_label = "CHOPPY"
             else: regime_label = "UNKNOWN"
-
             regime = {
                 "score": regime_total, "max": 40, "regime": regime_label,
                 "vix_spread": vix_spread if vix3m_p else None,
@@ -367,7 +318,7 @@ class handler(BaseHTTPRequestHandler):
             time_win = _time_window(now)
 
             # ── LAYER 6: Technical ──
-            vwap_score = 10 if spy_p > vwap else 10  # Both directions get score
+            vwap_score = 10
             vwap_dir = "CALL" if spy_p > vwap else "PUT"
             vol_score = 10 if vol_r >= 2.0 else (7 if vol_r >= 1.5 else (3 if vol_r >= 1.0 else 0))
             range_score = 10 if d_range >= 3.0 else (5 if d_range >= 2.0 else 0)
@@ -377,9 +328,8 @@ class handler(BaseHTTPRequestHandler):
                 if rsi_val >= 60: rsi_score, rsi_dir = 10, "CALL"
                 elif rsi_val <= 40: rsi_score, rsi_dir = 10, "PUT"
             tech_total = min(30, vwap_score + vol_score + range_score + rsi_score)
-            direction_bias = vwap_dir  # Primary bias from VWAP
-            technical = {"score": tech_total, "max": 30, "direction_bias": direction_bias,
-                         "rsi": rsi_val,
+            direction_bias = vwap_dir
+            technical = {"score": tech_total, "max": 30, "direction_bias": direction_bias, "rsi": rsi_val,
                          "details": {
                              "vwap_position": {"score": vwap_score, "detail": f"{'Above' if spy_p > vwap else 'Below'} VWAP by ${spy_p - vwap:+.2f}"},
                              "volume": {"score": vol_score, "detail": f"Volume {vol_r:.2f}x"},
@@ -387,28 +337,23 @@ class handler(BaseHTTPRequestHandler):
                              "momentum": {"score": rsi_score, "detail": f"RSI {rsi_val:.1f}" if rsi_val else "RSI N/A"}
                          }}
 
-            # ── LAYER 7: Risk (simplified for serverless) ──
+            # ── LAYER 7: Risk ──
             portfolio = load_portfolio()
             risk = {"passed": True, "score": 0, "lockout": False, "lockout_reason": None,
-                    "strikes_remaining": 3, "trades_remaining": 3, "daily_drawdown": 0,
-                    "details": {}}
+                    "strikes_remaining": 3, "trades_remaining": 3, "daily_drawdown": 0, "details": {}}
 
             # ── TOTAL SCORE ──
             raw_total = regime_total + corr_score + time_win["score"] + tech_total
-            active_max = 40 + 20 + 20 + 30  # 110
+            active_max = 40 + 20 + 20 + 30
             normalized = max(0, int((raw_total / active_max) * 100)) if active_max > 0 else 0
-
             signal = _signal_grade(normalized)
 
-            # Market session check
             t_min = now.hour * 60 + now.minute
             is_regular = 570 <= t_min <= 960
-
             if not is_regular:
                 signal["label"] = "MARKET CLOSED"
                 signal["action"] = "Market not in session"
 
-            # Legacy rules
             rules = {
                 "vix": {"val": f"{vix_p:.2f}", "ok": vix_p >= 14},
                 "range": {"val": f"${d_range:.2f}", "ok": d_range >= 3.0},
@@ -420,61 +365,48 @@ class handler(BaseHTTPRequestHandler):
 
             latency = round((time.perf_counter() - start_time) * 1000, 1)
 
-            gme_data = {}
-            for s in GME_STOCK:
-                try:
-                    t = tickers.tickers[s]
-                    gme_lp = safe_float(t.fast_info.last_price)
-                    gme_pc = safe_float(t.fast_info.previous_close, default=gme_lp)
-                    gme_data[s] = {"price": gme_lp,
-                                   "pct": ((gme_lp / gme_pc) - 1) * 100 if gme_pc > 0 else 0}
-                except: pass
+            # Build indices/mag7/gme from snapshots
+            INDICES_MAP = {"SPY": "S&P 500", "QQQ": "Nasdaq 100", "DIA": "Dow 30", "IWM": "Russell 2000", "^VIX": "VIX"}
+            indices_out = {}
+            for sym in INDICES_MAP:
+                if sym == "^VIX":
+                    indices_out[sym] = {"price": vix_p, "pct": 0.0}
+                else:
+                    s = snaps.get(sym, {})
+                    indices_out[sym] = {"price": _snap_price(s), "pct": _pct(_snap_price(s), _snap_prev_close(s) or 1)}
 
-            # ── STRIKE RECOMMENDATION ──
+            mag7_out = {}
+            for sym in MAG7:
+                s = snaps.get(sym, {})
+                mag7_out[sym] = {"price": _snap_price(s), "pct": _pct(_snap_price(s), _snap_prev_close(s) or 1)}
+
+            gme_data = {}
+            for sym in GME_STOCK:
+                s = snaps.get(sym, {})
+                gme_data[sym] = {"price": _snap_price(s), "pct": _pct(_snap_price(s), _snap_prev_close(s) or 1)}
+
             strike_rec = _calculate_strike_recommendation(
-                spy_price=spy_p,
-                direction_bias=direction_bias,
-                signal_grade=signal["grade"],
-                vix_price=vix_p,
-                vwap=vwap,
-                normalized_score=normalized,
-                portfolio_cash=portfolio.get("cash", STARTING_BALANCE),
-                now_et=now,
+                spy_price=spy_p, direction_bias=direction_bias, signal_grade=signal["grade"],
+                vix_price=vix_p, vwap=vwap, normalized_score=normalized,
+                portfolio_cash=portfolio.get("cash", STARTING_BALANCE), now_et=now,
             )
 
             final = {
                 "last_updated": ts, "fetch_status": "SUCCESS", "latency_ms": latency,
+                "data_source": "ALPACA",
                 "session": "REGULAR" if is_regular else "CLOSED",
                 "briefing": f"{time_win['emoji']} [{time_win['window']}] Regime: {regime_label} | Bias: {direction_bias} | Score: {normalized}/100",
-
-                # Score engine output
                 "total_score": normalized, "max_score": active_max, "raw_score": raw_total,
                 "signal": signal, "direction_bias": direction_bias,
                 "layers": {
                     "regime": regime,
                     "options_flow": {"score": 0, "max": 30, "status": "NOT_IMPLEMENTED", "detail": "Coming soon"},
-                    "correlation": correlation,
-                    "time_window": time_win,
-                    "technical": technical,
-                    "risk": risk,
+                    "correlation": correlation, "time_window": time_win, "technical": technical, "risk": risk,
                 },
-
-                # Strike recommendation
                 "strike_recommendation": strike_rec,
-
-                # Legacy
                 "verdict": signal["label"], "confidence": normalized, "reason": signal["action"],
                 "rules": rules, "alert_mode": "ON SIGNAL CHANGE",
-
-                # Market data
-                "indices": {s: {"price": safe_float(tickers.tickers[s].fast_info.last_price),
-                                "pct": ((safe_float(tickers.tickers[s].fast_info.last_price) / safe_float(tickers.tickers[s].fast_info.previous_close, default=1)) - 1) * 100
-                                       if safe_float(tickers.tickers[s].fast_info.previous_close) > 0 else 0}
-                            for s in INDICES},
-                "mag7": {s: {"price": safe_float(tickers.tickers[s].fast_info.last_price),
-                             "pct": ((safe_float(tickers.tickers[s].fast_info.last_price) / safe_float(tickers.tickers[s].fast_info.previous_close, default=1)) - 1) * 100
-                                    if safe_float(tickers.tickers[s].fast_info.previous_close) > 0 else 0}
-                         for s in MAG7},
+                "indices": indices_out, "mag7": mag7_out,
                 "gme_data": gme_data, "special_watch": gme_data,
                 "paper_trading": portfolio,
             }
@@ -487,9 +419,8 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(final, cls=SafeEncoder).encode('utf-8'))
 
         except Exception as e:
-            import traceback
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e), "version": "v6", "traceback": traceback.format_exc()}).encode('utf-8'))
+            self.wfile.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}).encode('utf-8'))

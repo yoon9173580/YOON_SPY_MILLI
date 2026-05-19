@@ -2,4 +2,4 @@ yfinance
 pandas
 pytz
 requests
-pandas_market_calendars
+numpy
