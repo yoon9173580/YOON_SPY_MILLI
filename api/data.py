@@ -231,7 +231,10 @@ def _fetch_raw_portfolio(retries=3):
 
 
 def _write_raw_portfolio(pf):
-    payload_pf = {k: v for k, v in pf.items() if not str(k).startswith("_")}
+    payload_pf = {
+        k: v for k, v in pf.items()
+        if not str(k).startswith("_") and k != "recent_trades"
+    }
     body = json.loads(json.dumps({"name": PORTFOLIO_STORAGE_KEY, "data": payload_pf}, cls=SafeEncoder))
 
     if _storage_backend() == "upstash":
@@ -247,9 +250,16 @@ def _write_raw_portfolio(pf):
         r.raise_for_status()
         return True
 
-    r = requests.put(RESTFUL_KV_URL, json=body, timeout=10)
-    r.raise_for_status()
-    return True
+    last_err = None
+    for attempt in range(3):
+        try:
+            r = requests.put(RESTFUL_KV_URL, json=body, timeout=12)
+            r.raise_for_status()
+            return True
+        except Exception as e:
+            last_err = e
+            time.sleep(0.2 * (attempt + 1))
+    raise last_err
 
 
 def load_portfolio():
@@ -272,26 +282,48 @@ def _is_closed_record(item):
     return item.get("status") == "CLOSED" or item.get("event") == "CLOSE" or item.get("pnl_locked")
 
 
+def _trade_signature(record):
+    if not isinstance(record, dict):
+        return None
+    tid = record.get("trade_id")
+    if tid:
+        return str(tid)
+    entry = record.get("entry_time") or record.get("time")
+    return f"{record.get('date')}-{entry}-{record.get('direction')}-{record.get('K_buy')}-{record.get('K_sell')}"
+
+
+def _ensure_trade_id(record):
+    if not isinstance(record, dict):
+        return record
+    if not record.get("entry_time") and record.get("time"):
+        record["entry_time"] = record["time"]
+    if not record.get("trade_id"):
+        entry = record.get("entry_time") or record.get("time") or "00:00"
+        record["trade_id"] = f"{record.get('date')}-{entry}-{record.get('direction')}-{record.get('K_buy')}"
+    return record
+
+
 def _finalize_closed_record(record):
     """Freeze realized P&L — closed trades must never be mark-to-market again."""
-    row = dict(record)
+    row = _ensure_trade_id(dict(record))
     row["status"] = "CLOSED"
     row["pnl_locked"] = True
     if row.get("pnl") is not None:
         row["realized_pnl"] = row["pnl"]
-    for key in ("unrealized_pnl", "unrealized_pnl_pct", "mark_spy", "mark_time"):
+    for key in ("unrealized_pnl", "unrealized_pnl_pct", "mark_spy", "mark_time", "current_val"):
         row.pop(key, None)
     return row
 
 
-def _trade_already_closed(pf, trade_id):
-    if not trade_id:
+def _trade_already_closed(pf, trade_id=None, record=None):
+    sig = trade_id or _trade_signature(record)
+    if not sig:
         return False
     for h in pf.get("history") or []:
-        if h.get("trade_id") == trade_id and _is_closed_record(h):
+        if _is_closed_record(h) and (_trade_signature(h) == sig or (trade_id and h.get("trade_id") == trade_id)):
             return True
     for e in pf.get("trade_log") or []:
-        if e.get("trade_id") == trade_id and e.get("event") == "CLOSE":
+        if e.get("event") == "CLOSE" and (_trade_signature(e) == sig or (trade_id and e.get("trade_id") == trade_id)):
             return True
     return False
 
@@ -302,7 +334,8 @@ def _merge_trade_records(items):
     for item in items:
         if not isinstance(item, dict):
             continue
-        tid = item.get("trade_id") or f"{item.get('date')}-{item.get('entry_time')}-{item.get('direction')}-{item.get('K_buy')}"
+        item = _ensure_trade_id(item)
+        tid = _trade_signature(item)
         item = _finalize_closed_record(item) if _is_closed_record(item) else dict(item)
         prev = merged.get(tid)
         if not prev:
@@ -382,7 +415,8 @@ def _has_close_row(rows, record):
 
 def _append_history(pf, record):
     if _is_closed_record(record):
-        if _trade_already_closed(pf, record.get("trade_id")):
+        record = _ensure_trade_id(record)
+        if _trade_already_closed(pf, record.get("trade_id"), record):
             return
         record = _finalize_closed_record(record)
     hist = pf.setdefault("history", [])
@@ -392,7 +426,8 @@ def _append_history(pf, record):
 
 def _append_trade_event(pf, event):
     if event.get("event") == "CLOSE":
-        if _trade_already_closed(pf, event.get("trade_id")):
+        event = _ensure_trade_id(event)
+        if _trade_already_closed(pf, event.get("trade_id"), event):
             return
         event = _finalize_closed_record(event)
     log = pf.setdefault("trade_log", [])
@@ -496,7 +531,8 @@ def _position_invalid_reason(open_pos, grade, direction_bias, score_result):
 
 
 def _record_position_close(portfolio, open_pos, today_str, now, spy_p, exit_val, exit_type):
-    if _trade_already_closed(portfolio, open_pos.get("trade_id")):
+    open_pos = _ensure_trade_id(open_pos)
+    if _trade_already_closed(portfolio, open_pos.get("trade_id"), open_pos):
         if today_str in portfolio.get("positions", {}):
             del portfolio["positions"][today_str]
         return
@@ -665,7 +701,9 @@ class handler(BaseHTTPRequestHandler):
                 if date_key == today_str:
                     continue
                 tid = pos.get("trade_id")
-                if _trade_already_closed(portfolio, tid):
+                pos = _ensure_trade_id(pos)
+                tid = pos.get("trade_id")
+                if _trade_already_closed(portfolio, tid, pos):
                     to_remove.append(date_key)
                     continue
                 pos = _close_trade(pos, now, spy_p, 0, "STALE_EOD")
@@ -714,7 +752,7 @@ class handler(BaseHTTPRequestHandler):
                     if contracts > 0:
                         cost = round(net_debit * 100 * contracts, 2)
                         trade_id = f"{today_str}-{now.strftime('%H%M%S')}-{direction_bias}"
-                        new_pos = {
+                        new_pos = _ensure_trade_id({
                             "trade_id": trade_id, "date": today_str, "status": "OPEN", "action": "BUY",
                             "score": normalized, "grade": signal["grade"],
                             "direction": direction_bias, "K_buy": K_buy, "K_sell": K_sell,
@@ -722,7 +760,7 @@ class handler(BaseHTTPRequestHandler):
                             "entry_spy": round(spy_p, 2), "entry_time": now.strftime("%H:%M"),
                             "entry_ts": now.strftime("%Y-%m-%d %H:%M:%S"), "time": now.strftime("%H:%M"),
                             "current_val": round(net_debit, 2), "unrealized_pnl": 0.0, "unrealized_pnl_pct": 0.0
-                        }
+                        })
                         portfolio["positions"][today_str] = new_pos
                         portfolio["cash"] -= cost
                         _append_trade_event(portfolio, {

@@ -553,6 +553,11 @@ function render(py) {
     const retPct = pt.total_return_pct || 0;
     retBadge.textContent = (retPct>=0?'+':'') + retPct.toFixed(2) + '% All Time';
     retBadge.className = 'badge ' + (retPct>=0?'pass':'fail');
+    if (pt.persist_ok === false) {
+      retBadge.textContent += ' · SAVE FAILED';
+      retBadge.className = 'badge fail';
+      retBadge.title = pt._save_error || 'Portfolio not saved to KV';
+    }
     
     // Render Active Positions
     const pos = Object.values(pt.positions || {});
@@ -578,7 +583,7 @@ function render(py) {
         const badge = tradeStatusBadge(h);
         const timeLabel = isOpenEvent
           ? (h.time || h.entry_time || '--')
-          : `${h.entry_time || h.time || '--'}→${h.exit_time || (h.logged_at || '').split(' ')[1] || '--'}`;
+          : `${h.entry_time || h.time || '--'} → ${h.exit_time || (h.logged_at || '').split(' ')[1] || '--'}`;
         return `<div class="pt-hist-item">
           <span>
             <span style="color:var(--muted);margin-right:8px">${(h.date || '').length >= 5 ? h.date.substring(5) : (h.date || '--')}</span>
