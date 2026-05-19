@@ -34,7 +34,6 @@ ALPACA_HEADERS = {
     "APCA-API-KEY-ID": os.getenv("APCA_API_KEY_ID", ""),
     "APCA-API-SECRET-KEY": os.getenv("APCA_API_SECRET_KEY", ""),
 }
-NY = pytz.timezone("America/New_York")
 
 
 class SafeEncoder(json.JSONEncoder):
@@ -223,6 +222,66 @@ def _close_trade(pos, now, spy_p, exit_val, exit_type):
     })
     return pos
 
+
+def _entry_criteria_met(grade, direction_bias, score_result):
+    """Same rules used to open a debit spread."""
+    layers = score_result.get("layers", {})
+    if layers.get("risk", {}).get("passed") is False or grade == "LOCKED":
+        return False
+    if grade != "STRONG":
+        return False
+    if layers.get("time_window", {}).get("score", 0) < 20:
+        return False
+    if direction_bias not in ("CALL", "PUT"):
+        return False
+    return True
+
+
+def _position_invalid_reason(open_pos, grade, direction_bias, score_result):
+    """Return exit_type when the open trade no longer matches live signal; else None."""
+    if not _entry_criteria_met(grade, direction_bias, score_result):
+        layers = score_result.get("layers", {})
+        if layers.get("risk", {}).get("passed") is False or grade == "LOCKED":
+            return "RISK"
+        if grade != "STRONG":
+            return "SIGNAL"
+        if layers.get("time_window", {}).get("score", 0) < 20:
+            return "TIME_WINDOW"
+        if direction_bias not in ("CALL", "PUT"):
+            return "DIRECTION"
+    if open_pos.get("direction") != direction_bias:
+        return "DIRECTION"
+    return None
+
+
+def _record_position_close(portfolio, open_pos, today_str, now, spy_p, exit_val, exit_type):
+    open_pos = _close_trade(open_pos, now, spy_p, exit_val, exit_type)
+    portfolio["cash"] += open_pos["revenue"]
+    portfolio["history"].insert(0, open_pos.copy())
+    _append_trade_event(portfolio, {
+        "event": "CLOSE",
+        "trade_id": open_pos.get("trade_id"),
+        "date": open_pos.get("date"),
+        "entry_time": open_pos.get("entry_time"),
+        "exit_time": open_pos.get("exit_time"),
+        "direction": open_pos.get("direction"),
+        "K_buy": open_pos.get("K_buy"),
+        "K_sell": open_pos.get("K_sell"),
+        "contracts": open_pos.get("contracts"),
+        "entry_spy": open_pos.get("entry_spy"),
+        "exit_spy": open_pos.get("exit_spy"),
+        "net_debit": open_pos.get("net_debit"),
+        "exit_val": open_pos.get("exit_val"),
+        "exit_type": open_pos.get("exit_type"),
+        "cost": open_pos.get("cost"),
+        "revenue": open_pos.get("revenue"),
+        "pnl": open_pos.get("pnl"),
+        "pnl_pct": open_pos.get("pnl_pct"),
+        "win": open_pos.get("win"),
+    })
+    del portfolio["positions"][today_str]
+    save_portfolio(portfolio)
+
 def save_portfolio(pf):
     try:
         # Update portfolio metrics
@@ -363,9 +422,9 @@ class handler(BaseHTTPRequestHandler):
                 for k in to_remove: del portfolio["positions"][k]
                 save_portfolio(portfolio)
 
-            # 2. Check for entry
+            # 2. Check for entry (only while entry criteria hold)
             open_pos = portfolio.get("positions", {}).get(today_str)
-            if not open_pos and grade == "STRONG" and score_result["layers"].get("time_window", {}).get("score", 0) >= 20:
+            if not open_pos and is_regular and _entry_criteria_met(grade, direction_bias, score_result):
                 # Open Debit Spread
                 iv = vix_val / 100.0
                 opt = "call" if direction_bias == "CALL" else "put"
@@ -413,7 +472,7 @@ class handler(BaseHTTPRequestHandler):
                         })
                         save_portfolio(portfolio)
 
-            # 3. Check for exit (TP 100% or EOD)
+            # 3. Manage open position — mark, exit when signal invalid / SL / TP / EOD
             open_pos = portfolio.get("positions", {}).get(today_str)
             if open_pos:
                 iv = vix_val / 100.0
@@ -433,44 +492,22 @@ class handler(BaseHTTPRequestHandler):
                 open_pos["unrealized_pnl_pct"] = round((open_pos["unrealized_pnl"] / open_pos["cost"]) * 100, 1) if open_pos.get("cost", 0) > 0 else 0.0
                 
                 tp_price = open_pos["net_debit"] * 2.0
-                closed = False
-                
-                if current_val >= tp_price:
-                    open_pos["exit_val"] = tp_price
-                    open_pos["exit_type"] = "TP"
-                    closed = True
+                exit_val = mark_value
+                exit_type = None
+
+                invalid_reason = _position_invalid_reason(open_pos, grade, direction_bias, score_result)
+                if invalid_reason:
+                    exit_type = invalid_reason
+                elif open_pos["unrealized_pnl_pct"] <= -50.0:
+                    exit_type = "SL"
+                elif current_val >= tp_price:
+                    exit_val = tp_price
+                    exit_type = "TP"
                 elif not is_regular or now.hour >= 16:
-                    open_pos["exit_val"] = max(0, current_val)
-                    open_pos["exit_type"] = "EOD"
-                    closed = True
-                    
-                if closed:
-                    open_pos = _close_trade(open_pos, now, spy_p, open_pos["exit_val"], open_pos["exit_type"])
-                    portfolio["cash"] += open_pos["revenue"]
-                    portfolio["history"].insert(0, open_pos.copy())
-                    _append_trade_event(portfolio, {
-                        "event": "CLOSE",
-                        "trade_id": open_pos.get("trade_id"),
-                        "date": open_pos.get("date"),
-                        "entry_time": open_pos.get("entry_time"),
-                        "exit_time": open_pos.get("exit_time"),
-                        "direction": open_pos.get("direction"),
-                        "K_buy": open_pos.get("K_buy"),
-                        "K_sell": open_pos.get("K_sell"),
-                        "contracts": open_pos.get("contracts"),
-                        "entry_spy": open_pos.get("entry_spy"),
-                        "exit_spy": open_pos.get("exit_spy"),
-                        "net_debit": open_pos.get("net_debit"),
-                        "exit_val": open_pos.get("exit_val"),
-                        "exit_type": open_pos.get("exit_type"),
-                        "cost": open_pos.get("cost"),
-                        "revenue": open_pos.get("revenue"),
-                        "pnl": open_pos.get("pnl"),
-                        "pnl_pct": open_pos.get("pnl_pct"),
-                        "win": open_pos.get("win"),
-                    })
-                    del portfolio["positions"][today_str]
-                    save_portfolio(portfolio)
+                    exit_type = "EOD"
+
+                if exit_type:
+                    _record_position_close(portfolio, open_pos, today_str, now, spy_p, exit_val, exit_type)
                 else:
                     portfolio["positions"][today_str] = open_pos
                     save_portfolio(portfolio)
