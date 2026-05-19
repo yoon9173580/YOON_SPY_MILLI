@@ -307,8 +307,33 @@ function renderLayerBars(layers) {
   }).join('');
 }
 
+function rowCompleteness(h) {
+  let s = 0;
+  if (h.entry_time || h.time) s += 4;
+  if (h.exit_time) s += 2;
+  if (h.pnl != null) s += 2;
+  if (h.trade_id) s += 1;
+  return s;
+}
+
+function ledgerDedupeKey(h) {
+  const st = h.display_status || h.event || '?';
+  if (h.trade_id) return `${st}:${h.trade_id}`;
+  return `${st}:${h.date}:${h.direction}:${h.K_buy}:${h.K_sell}:${h.exit_time || h.logged_at || ''}`;
+}
+
+function dedupeLedgerRows(rows) {
+  const best = new Map();
+  for (const row of rows) {
+    const key = ledgerDedupeKey(row);
+    const prev = best.get(key);
+    if (!prev || rowCompleteness(row) >= rowCompleteness(prev)) best.set(key, row);
+  }
+  const recency = (h) => h.logged_at || h.exit_ts || h.entry_ts || `${h.date || ''} ${h.exit_time || h.entry_time || h.time || ''}`;
+  return Array.from(best.values()).sort((a, b) => (recency(a) < recency(b) ? 1 : -1));
+}
+
 function buildRecentTrades(pt) {
-  if (pt.recent_trades && pt.recent_trades.length) return pt.recent_trades;
   const recency = (h) => h.logged_at || h.exit_ts || h.entry_ts || `${h.date || ''} ${h.exit_time || h.entry_time || h.time || ''}`;
   const rows = [];
   const openLogged = new Set();
@@ -321,12 +346,17 @@ function buildRecentTrades(pt) {
     if (p.trade_id && openLogged.has(p.trade_id)) continue;
     rows.push({ ...p, display_status: 'OPEN', event: 'OPEN', status: 'OPEN' });
   }
-  const closeLogged = new Set(rows.filter(r => r.display_status === 'CLOSE').map(r => r.trade_id));
+  const hasClose = (h) => rows.some(r => {
+    if (r.display_status !== 'CLOSE') return false;
+    if (h.trade_id && r.trade_id === h.trade_id) return true;
+    return r.date === h.date && r.direction === h.direction && r.K_buy === h.K_buy
+      && r.K_sell === h.K_sell && r.exit_time === h.exit_time;
+  });
   for (const h of (pt.history || [])) {
-    if (h.trade_id && closeLogged.has(h.trade_id)) continue;
+    if (hasClose(h)) continue;
     rows.push({ ...h, display_status: 'CLOSE', event: 'CLOSE', status: 'CLOSED' });
   }
-  return rows.sort((a, b) => (recency(a) < recency(b) ? 1 : -1));
+  return dedupeLedgerRows(rows);
 }
 
 function tradeStatusBadge(h) {

@@ -229,6 +229,53 @@ def _cap_list(items, limit=MAX_TRADE_HISTORY):
     return list(items)[:limit] if items else []
 
 
+def _row_completeness(row):
+    score = 0
+    if row.get("entry_time") or row.get("time"):
+        score += 4
+    if row.get("exit_time"):
+        score += 2
+    if row.get("pnl") is not None:
+        score += 2
+    if row.get("trade_id"):
+        score += 1
+    return score
+
+
+def _ledger_dedupe_key(row):
+    st = row.get("display_status") or row.get("event") or "?"
+    tid = row.get("trade_id")
+    if tid:
+        return f"{st}:{tid}"
+    return (
+        f"{st}:{row.get('date')}:{row.get('direction')}:"
+        f"{row.get('K_buy')}:{row.get('K_sell')}:{row.get('exit_time') or row.get('logged_at', '')}"
+    )
+
+
+def _dedupe_ledger_rows(rows):
+    best = {}
+    for row in rows:
+        key = _ledger_dedupe_key(row)
+        prev = best.get(key)
+        if not prev or _row_completeness(row) >= _row_completeness(prev):
+            best[key] = row
+    return sorted(best.values(), key=_trade_recency_key, reverse=True)
+
+
+def _has_close_row(rows, record):
+    tid = record.get("trade_id")
+    if tid and any(r.get("trade_id") == tid and r.get("display_status") == "CLOSE" for r in rows):
+        return True
+    sig = (record.get("date"), record.get("direction"), record.get("K_buy"), record.get("K_sell"), record.get("exit_time"))
+    for r in rows:
+        if r.get("display_status") != "CLOSE":
+            continue
+        if (r.get("date"), r.get("direction"), r.get("K_buy"), r.get("K_sell"), r.get("exit_time")) == sig:
+            return True
+    return False
+
+
 def _append_history(pf, record):
     hist = pf.setdefault("history", [])
     hist.insert(0, record)
@@ -267,10 +314,8 @@ def _build_recent_trades(pf):
         row["status"] = "OPEN"
         rows.append(row)
 
-    close_logged = {r.get("trade_id") for r in rows if r.get("display_status") == "CLOSE"}
     for h in pf.get("history") or []:
-        tid = h.get("trade_id")
-        if tid and tid in close_logged:
+        if _has_close_row(rows, h):
             continue
         row = dict(h)
         row["display_status"] = "CLOSE"
@@ -278,7 +323,7 @@ def _build_recent_trades(pf):
         row["status"] = "CLOSED"
         rows.append(row)
 
-    return _cap_list(sorted(rows, key=_trade_recency_key, reverse=True))
+    return _cap_list(_dedupe_ledger_rows(rows))
 
 def _close_trade(pos, now, spy_p, exit_val, exit_type):
     contracts = int(pos.get("contracts", 0) or 0)
