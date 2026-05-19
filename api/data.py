@@ -31,6 +31,31 @@ def safe_float(val, default=0.0):
         return default
 
 
+import numpy as np
+
+class SafeEncoder(json.JSONEncoder):
+    """JSON encoder that handles pandas/numpy types safely."""
+    def default(self, obj):
+        try:
+            if pd.isna(obj):
+                return None
+        except (TypeError, ValueError):
+            pass
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            if np.isnan(obj) or np.isinf(obj):
+                return None
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.bool_,)):
+            return bool(obj)
+        if isinstance(obj, pd.Timestamp):
+            return str(obj)
+        return super().default(obj)
+
+
 # ── Inline Engine (Vercel can't import local modules easily) ────────
 # Simplified versions of the engine layers for serverless deployment
 
@@ -459,11 +484,12 @@ class handler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
             self.end_headers()
-            self.wfile.write(json.dumps(final).encode('utf-8'))
+            self.wfile.write(json.dumps(final, cls=SafeEncoder).encode('utf-8'))
 
         except Exception as e:
+            import traceback
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            self.wfile.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}).encode('utf-8'))
