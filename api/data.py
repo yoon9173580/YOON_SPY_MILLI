@@ -16,6 +16,21 @@ NY = pytz.timezone("America/New_York")
 STARTING_BALANCE = 2000.0
 
 
+def safe_float(val, default=0.0):
+    """Safely convert yfinance values to float, handling NA/NaN/None."""
+    if val is None:
+        return default
+    try:
+        if pd.isna(val):
+            return default
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
 # ── Inline Engine (Vercel can't import local modules easily) ────────
 # Simplified versions of the engine layers for serverless deployment
 
@@ -254,13 +269,13 @@ class handler(BaseHTTPRequestHandler):
             tickers = yf.Tickers(" ".join(all_syms))
 
             spy = tickers.tickers["SPY"]
-            spy_p = float(spy.fast_info.last_price)
-            spy_prev = float(spy.fast_info.previous_close)
-            vix_p = float(tickers.tickers["^VIX"].fast_info.last_price)
+            spy_p = safe_float(spy.fast_info.last_price)
+            spy_prev = safe_float(spy.fast_info.previous_close, default=spy_p)
+            vix_p = safe_float(tickers.tickers["^VIX"].fast_info.last_price, default=18.0)
 
             # VIX3M
             vix3m_p = None
-            try: vix3m_p = float(tickers.tickers["^VIX3M"].fast_info.last_price)
+            try: vix3m_p = safe_float(tickers.tickers["^VIX3M"].fast_info.last_price, default=None)
             except: pass
 
             # SPY 5-min history
@@ -280,7 +295,9 @@ class handler(BaseHTTPRequestHandler):
             for sym in ["SPY", "QQQ", "IWM", "DIA"]:
                 try:
                     t = tickers.tickers[sym]
-                    pcts_data[sym] = (float(t.fast_info.last_price) / float(t.fast_info.previous_close) - 1) * 100
+                    lp = safe_float(t.fast_info.last_price)
+                    pc = safe_float(t.fast_info.previous_close, default=lp)
+                    pcts_data[sym] = ((lp / pc) - 1) * 100 if pc > 0 else 0
                 except: pcts_data[sym] = 0
 
             # ── LAYER 2: Regime ──
@@ -382,8 +399,10 @@ class handler(BaseHTTPRequestHandler):
             for s in GME_STOCK:
                 try:
                     t = tickers.tickers[s]
-                    gme_data[s] = {"price": float(t.fast_info.last_price),
-                                   "pct": (float(t.fast_info.last_price) / float(t.fast_info.previous_close) - 1) * 100}
+                    gme_lp = safe_float(t.fast_info.last_price)
+                    gme_pc = safe_float(t.fast_info.previous_close, default=gme_lp)
+                    gme_data[s] = {"price": gme_lp,
+                                   "pct": ((gme_lp / gme_pc) - 1) * 100 if gme_pc > 0 else 0}
                 except: pass
 
             # ── STRIKE RECOMMENDATION ──
@@ -423,11 +442,13 @@ class handler(BaseHTTPRequestHandler):
                 "rules": rules, "alert_mode": "ON SIGNAL CHANGE",
 
                 # Market data
-                "indices": {s: {"price": float(tickers.tickers[s].fast_info.last_price),
-                                "pct": (float(tickers.tickers[s].fast_info.last_price) / float(tickers.tickers[s].fast_info.previous_close) - 1) * 100}
+                "indices": {s: {"price": safe_float(tickers.tickers[s].fast_info.last_price),
+                                "pct": ((safe_float(tickers.tickers[s].fast_info.last_price) / safe_float(tickers.tickers[s].fast_info.previous_close, default=1)) - 1) * 100
+                                       if safe_float(tickers.tickers[s].fast_info.previous_close) > 0 else 0}
                             for s in INDICES},
-                "mag7": {s: {"price": float(tickers.tickers[s].fast_info.last_price),
-                             "pct": (float(tickers.tickers[s].fast_info.last_price) / float(tickers.tickers[s].fast_info.previous_close) - 1) * 100}
+                "mag7": {s: {"price": safe_float(tickers.tickers[s].fast_info.last_price),
+                             "pct": ((safe_float(tickers.tickers[s].fast_info.last_price) / safe_float(tickers.tickers[s].fast_info.previous_close, default=1)) - 1) * 100
+                                    if safe_float(tickers.tickers[s].fast_info.previous_close) > 0 else 0}
                          for s in MAG7},
                 "gme_data": gme_data, "special_watch": gme_data,
                 "paper_trading": portfolio,
