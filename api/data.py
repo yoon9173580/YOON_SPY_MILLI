@@ -202,7 +202,7 @@ def _trade_recency_key(item):
 
 
 def _merge_trade_records(items):
-    """Merge trade rows by trade_id; keep the most complete / latest version."""
+    """Merge closed trade rows by trade_id; keep the most complete / latest version."""
     merged = {}
     for item in items:
         if not isinstance(item, dict):
@@ -211,6 +211,17 @@ def _merge_trade_records(items):
         prev = merged.get(tid)
         if not prev or _trade_recency_key(item) >= _trade_recency_key(prev):
             merged[tid] = item
+    return sorted(merged.values(), key=_trade_recency_key, reverse=True)
+
+
+def _merge_trade_events(items):
+    """Keep every OPEN/CLOSE ledger event (do not collapse by trade_id)."""
+    merged = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = f"{item.get('trade_id')}-{item.get('event')}-{item.get('logged_at')}"
+        merged[key] = item
     return sorted(merged.values(), key=_trade_recency_key, reverse=True)
 
 
@@ -232,19 +243,42 @@ def _append_trade_event(pf, event):
 
 
 def _build_recent_trades(pf):
-    """Persistent Recent Trades feed: closed history + currently open positions."""
-    rows = _merge_trade_records(list(pf.get("history") or []))
-    open_ids = set()
+    """Ledger-style feed: each OPEN and CLOSE event is its own row."""
+    rows = []
+    open_logged = set()
+
+    for e in pf.get("trade_log") or []:
+        ev = e.get("event")
+        if ev not in ("OPEN", "CLOSE"):
+            continue
+        row = dict(e)
+        row["display_status"] = ev
+        if ev == "OPEN" and row.get("trade_id"):
+            open_logged.add(row["trade_id"])
+        rows.append(row)
+
     for pos in (pf.get("positions") or {}).values():
+        tid = pos.get("trade_id")
+        if tid and tid in open_logged:
+            continue
         row = dict(pos)
+        row["display_status"] = "OPEN"
+        row["event"] = "OPEN"
         row["status"] = "OPEN"
-        row.setdefault("action", "BUY")
-        tid = row.get("trade_id")
-        if tid:
-            open_ids.add(tid)
-        rows = [r for r in rows if r.get("trade_id") != tid]
-        rows.insert(0, row)
-    return _cap_list(_merge_trade_records(rows))
+        rows.append(row)
+
+    close_logged = {r.get("trade_id") for r in rows if r.get("display_status") == "CLOSE"}
+    for h in pf.get("history") or []:
+        tid = h.get("trade_id")
+        if tid and tid in close_logged:
+            continue
+        row = dict(h)
+        row["display_status"] = "CLOSE"
+        row["event"] = "CLOSE"
+        row["status"] = "CLOSED"
+        rows.append(row)
+
+    return _cap_list(sorted(rows, key=_trade_recency_key, reverse=True))
 
 def _close_trade(pos, now, spy_p, exit_val, exit_type):
     contracts = int(pos.get("contracts", 0) or 0)
@@ -330,7 +364,7 @@ def save_portfolio(pf):
     try:
         remote = load_portfolio()
         pf["history"] = _cap_list(_merge_trade_records((remote.get("history") or []) + (pf.get("history") or [])))
-        pf["trade_log"] = _cap_list(_merge_trade_records((remote.get("trade_log") or []) + (pf.get("trade_log") or [])))
+        pf["trade_log"] = _cap_list(_merge_trade_events((remote.get("trade_log") or []) + (pf.get("trade_log") or [])))
         pf["recent_trades"] = _build_recent_trades(pf)
         pf["current_value"] = pf["cash"]
         for p in pf.get("positions", {}).values():

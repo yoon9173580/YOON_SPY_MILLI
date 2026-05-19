@@ -309,17 +309,30 @@ function renderLayerBars(layers) {
 
 function buildRecentTrades(pt) {
   if (pt.recent_trades && pt.recent_trades.length) return pt.recent_trades;
-  const byId = new Map();
-  const recency = (h) => h.exit_ts || h.entry_ts || h.logged_at || `${h.date || ''} ${h.exit_time || h.entry_time || h.time || ''}`;
-  for (const h of (pt.history || [])) {
-    const id = h.trade_id || `${h.date}-${h.entry_time}-${h.direction}-${h.K_buy}`;
-    byId.set(id, h);
-  }
+  const recency = (h) => h.logged_at || h.exit_ts || h.entry_ts || `${h.date || ''} ${h.exit_time || h.entry_time || h.time || ''}`;
+  const rows = [];
+  const openLogged = new Set();
   for (const e of (pt.trade_log || [])) {
-    const id = e.trade_id || `${e.date}-${e.time}-${e.direction}-${e.K_buy}`;
-    if (!byId.has(id)) byId.set(id, e);
+    if (e.event !== 'OPEN' && e.event !== 'CLOSE') continue;
+    rows.push({ ...e, display_status: e.event });
+    if (e.event === 'OPEN' && e.trade_id) openLogged.add(e.trade_id);
   }
-  return Array.from(byId.values()).sort((a, b) => (recency(a) < recency(b) ? 1 : -1));
+  for (const p of Object.values(pt.positions || {})) {
+    if (p.trade_id && openLogged.has(p.trade_id)) continue;
+    rows.push({ ...p, display_status: 'OPEN', event: 'OPEN', status: 'OPEN' });
+  }
+  const closeLogged = new Set(rows.filter(r => r.display_status === 'CLOSE').map(r => r.trade_id));
+  for (const h of (pt.history || [])) {
+    if (h.trade_id && closeLogged.has(h.trade_id)) continue;
+    rows.push({ ...h, display_status: 'CLOSE', event: 'CLOSE', status: 'CLOSED' });
+  }
+  return rows.sort((a, b) => (recency(a) < recency(b) ? 1 : -1));
+}
+
+function tradeStatusBadge(h) {
+  const st = h.display_status || h.event || (h.status === 'OPEN' ? 'OPEN' : 'CLOSE');
+  if (st === 'CLOSE' && h.exit_type) return `CLOSE · ${h.exit_type}`;
+  return st;
 }
 
 function render(py) {
@@ -506,10 +519,13 @@ function render(py) {
     const hist = buildRecentTrades(pt);
     if(hist.length > 0) {
       document.getElementById('ptHistory').innerHTML = hist.map(h => {
-        const isOpenEvent = h.event === 'OPEN' || h.status === 'OPEN';
+        const isOpenEvent = (h.display_status || h.event) === 'OPEN' || h.status === 'OPEN';
         const pnl = h.pnl || 0;
         const isWin = pnl > 0;
-        const timeLabel = isOpenEvent ? (h.time || h.entry_time || '--') : `${h.entry_time || '--'}→${h.exit_time || '--'}`;
+        const badge = tradeStatusBadge(h);
+        const timeLabel = isOpenEvent
+          ? (h.time || h.entry_time || '--')
+          : `${h.entry_time || h.time || '--'}→${h.exit_time || (h.logged_at || '').split(' ')[1] || '--'}`;
         return `<div class="pt-hist-item">
           <span>
             <span style="color:var(--muted);margin-right:8px">${(h.date || '').length >= 5 ? h.date.substring(5) : (h.date || '--')}</span>
@@ -518,7 +534,7 @@ function render(py) {
             <span style="margin-left:6px;color:var(--muted);font-size:0.6rem">${timeLabel}</span>
           </span>
           <span style="text-align:right">
-            <span style="color:var(--muted);font-size:0.6rem;margin-right:6px">[${isOpenEvent ? 'OPEN' : h.exit_type}]</span>
+            <span style="color:var(--muted);font-size:0.6rem;margin-right:6px">[${badge}]</span>
             <span style="color:${isOpenEvent?'var(--info)':(isWin?'var(--go)':'var(--stop)')};font-weight:700">${isOpenEvent ? '$'+(h.cost||0).toFixed(0) : (isWin?'+':'')+'$'+pnl.toFixed(0)}</span>
           </span>
         </div>`;
