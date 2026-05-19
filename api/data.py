@@ -284,11 +284,11 @@ class handler(BaseHTTPRequestHandler):
             if not spy_h.empty:
                 tp = (spy_h["High"] + spy_h["Low"] + spy_h["Close"]) / 3.0
                 cum_vol = spy_h["Volume"].cumsum().replace(0, pd.NA)
-                vwap = float(((spy_h["Volume"] * tp).cumsum() / cum_vol).iloc[-1])
+                vwap = safe_float(((spy_h["Volume"] * tp).cumsum() / cum_vol).iloc[-1])
                 vol_sma = spy_h["Volume"].rolling(window=20).mean()
                 if not vol_sma.empty and pd.notna(vol_sma.iloc[-1]) and vol_sma.iloc[-1] > 0:
-                    vol_r = float(spy_h["Volume"].iloc[-1] / vol_sma.iloc[-1])
-                d_range = float(spy_h["High"].max() - spy_h["Low"].min())
+                    vol_r = safe_float(spy_h["Volume"].iloc[-1] / vol_sma.iloc[-1])
+                d_range = safe_float(spy_h["High"].max() - spy_h["Low"].min())
 
             # ── Percentage Changes ──
             pcts_data = {}
