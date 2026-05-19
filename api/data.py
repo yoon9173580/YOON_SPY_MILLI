@@ -35,6 +35,8 @@ ALPACA_HEADERS = {
     "APCA-API-KEY-ID": os.getenv("APCA_API_KEY_ID", ""),
     "APCA-API-SECRET-KEY": os.getenv("APCA_API_SECRET_KEY", ""),
 }
+FLASHALPHA_API_KEY = os.getenv("FLASHALPHA_API_KEY", "2w8k40hmZIfWsJpJjx3dX6T0j20o4evRSZtjD1df")
+FLASHALPHA_API_URL = "https://lab.flashalpha.com/v1"
 _VIX_CACHE = {"at": 0.0, "vix": 18.0, "vix3m": None}
 VIX_CACHE_SEC = int(os.getenv("VIX_CACHE_SEC", "45"))
 YAHOO_UA = "Mozilla/5.0 (compatible; SPY0DTE/1.0)"
@@ -117,10 +119,38 @@ def _vix_fallback():
     return vix_p, vix3m_p
 
 
+def _flashalpha_spy_summary():
+    """Fetch SPY summary data from FlashAlpha API (volume, VWAP, etc.)."""
+    try:
+        url = f"{FLASHALPHA_API_URL}/stock/spy/summary"
+        r = requests.get(
+            url,
+            headers={"X-Api-Key": FLASHALPHA_API_KEY},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return {
+                "price": data.get("price"),
+                "vwap": data.get("vwap"),
+                "open": data.get("open"),
+                "high": data.get("high"),
+                "low": data.get("low"),
+                "volume": data.get("volume"),
+                "bid": data.get("bid"),
+                "ask": data.get("ask"),
+                "spread": data.get("spread"),
+                "update_time": data.get("update_time"),
+            }
+    except Exception as e:
+        pass
+    return None
+
+
 def _fetch_market_bundle(all_stocks):
-    """Parallel market data fetch (snapshots, bars, VIX, portfolio)."""
+    """Parallel market data fetch (snapshots, bars, VIX, portfolio, FlashAlpha)."""
     timing = {}
-    out = {"snaps": {}, "spy_h": pd.DataFrame(), "vix": (18.0, None), "portfolio": _default_pf()}
+    out = {"snaps": {}, "spy_h": pd.DataFrame(), "vix": (18.0, None), "portfolio": _default_pf(), "flashalpha": None}
 
     def _timed(name, fn, *args):
         t0 = time.perf_counter()
@@ -133,9 +163,10 @@ def _fetch_market_bundle(all_stocks):
         "snaps": lambda: _timed("snapshots_ms", _alpaca_snapshots, all_stocks),
         "spy_h": lambda: _timed("bars_ms", _alpaca_bars, "SPY", "5Min"),
         "vix": lambda: _timed("vix_ms", _vix_fallback),
+        "flashalpha": lambda: _timed("flashalpha_ms", _flashalpha_spy_summary),
         "portfolio": lambda: _timed("portfolio_ms", load_portfolio),
     }
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {pool.submit(fn): key for key, fn in tasks.items()}
         for fut in as_completed(futures):
             key = futures[fut]
@@ -281,7 +312,20 @@ def _fetch_raw_portfolio(retries=3):
         except Exception:
             pass
         time.sleep(0.15 * (attempt + 1))
+    
+    # Fallback to local file if remote storage fails
+    try:
+        if os.path.exists("paper_portfolio.json"):
+            with open("paper_portfolio.json", "r") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "cash" in data:
+                    data["_storage"] = "local"
+                    return data
+    except Exception:
+        pass
+    
     return None
+
 
 
 def _write_raw_portfolio(pf):
@@ -295,14 +339,23 @@ def _write_raw_portfolio(pf):
         base = os.getenv("KV_REST_API_URL", "").rstrip("/")
         token = os.getenv("KV_REST_API_TOKEN", "")
         raw = json.dumps(payload_pf, cls=SafeEncoder)
-        r = requests.post(
-            f"{base}/set/{PORTFOLIO_STORAGE_KEY}",
-            data=raw,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        return True
+        try:
+            r = requests.post(
+                f"{base}/set/{PORTFOLIO_STORAGE_KEY}",
+                data=raw,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                timeout=10,
+            )
+            r.raise_for_status()
+            return True
+        except Exception as e:
+            # Fallback to local file if Upstash fails
+            try:
+                with open("paper_portfolio.json", "w") as f:
+                    json.dump(payload_pf, f, cls=SafeEncoder)
+                return True
+            except:
+                raise e
 
     last_err = None
     for attempt in range(3):
@@ -313,7 +366,14 @@ def _write_raw_portfolio(pf):
         except Exception as e:
             last_err = e
             time.sleep(0.2 * (attempt + 1))
-    raise last_err
+    
+    # Fallback to local file if remote API fails
+    try:
+        with open("paper_portfolio.json", "w") as f:
+            json.dump(payload_pf, f, cls=SafeEncoder)
+        return True
+    except:
+        raise last_err
 
 
 def load_portfolio():
@@ -680,10 +740,16 @@ class handler(BaseHTTPRequestHandler):
             spy_h = bundle["spy_h"]
             vix_p, vix3m_p = bundle["vix"]
             portfolio = bundle["portfolio"]
+            flashalpha_spy = bundle.get("flashalpha")
             fetch_timing = bundle.get("timing_ms", {})
 
             spy_p = _snap_price(snaps.get("SPY", {}))
             spy_prev = _snap_prev_close(snaps.get("SPY", {})) or spy_p
+            
+            # FlashAlpha VWAP override if available
+            vwap = spy_p  # default
+            if flashalpha_spy and flashalpha_spy.get("vwap"):
+                vwap = flashalpha_spy.get("vwap")
 
             # ── Percentage changes from snapshots ──
             pcts_data = {}
@@ -692,13 +758,16 @@ class handler(BaseHTTPRequestHandler):
                 pcts_data[sym] = _pct(_snap_price(s), _snap_prev_close(s) or 1)
 
             # ── Compute VWAP / volume / range from bars ──
-            vwap, vol_r, d_range = 0.0, 0.0, 0.0
-            if not spy_h.empty:
+            vol_r, d_range = 0.0, 0.0
+            if not spy_h.empty and not flashalpha_spy:
+                # Only compute VWAP from bars if FlashAlpha data not available
                 tp = (spy_h["High"] + spy_h["Low"] + spy_h["Close"]) / 3.0
                 cum_vol = spy_h["Volume"].cumsum().replace(0, pd.NA)
                 vwap_s = (spy_h["Volume"] * tp).cumsum() / cum_vol
                 if not vwap_s.empty and pd.notna(vwap_s.iloc[-1]):
                     vwap = float(vwap_s.iloc[-1])
+            
+            if not spy_h.empty:
                 vol_sma = spy_h["Volume"].rolling(window=20).mean()
                 if not vol_sma.empty and pd.notna(vol_sma.iloc[-1]) and vol_sma.iloc[-1] > 0:
                     vol_r = float(spy_h["Volume"].iloc[-1] / vol_sma.iloc[-1])
@@ -872,6 +941,7 @@ class handler(BaseHTTPRequestHandler):
             portfolio["recent_trades"] = _build_recent_trades(portfolio)
             save_ok = save_portfolio(portfolio)
             portfolio["persist_ok"] = save_ok
+            portfolio["storage_type"] = portfolio.get("_storage", "unknown")
             portfolio["trade_count"] = len(portfolio.get("history") or [])
 
             rules = {
@@ -914,7 +984,8 @@ class handler(BaseHTTPRequestHandler):
             final = {
                 "last_updated": ts, "fetch_status": "SUCCESS", "latency_ms": latency,
                 "timing_ms": fetch_timing,
-                "data_source": "ALPACA",
+                "data_source": "ALPACA + FlashAlpha" if flashalpha_spy else "ALPACA",
+                "flashalpha": flashalpha_spy,
                 "session": "REGULAR" if is_regular else "CLOSED",
                 "briefing": f"{score_result['layers']['time_window']['emoji']} [{score_result['layers']['time_window']['window']}] Regime: {score_result['layers']['regime']['regime']} | Bias: {direction_bias} | Score: {normalized}/100",
                 "total_score": normalized, "max_score": active_max, "raw_score": raw_total,

@@ -163,7 +163,10 @@ if(sessionStorage.getItem('spy_auth')==='1') document.getElementById('authGate')
   <!-- Status Bar -->
   <div class="status-bar">
     <div style="display:flex;align-items:center;gap:8px"><div class="pulse-dot"></div><span class="mono" style="font-weight:700">SPY 0DTE SIGNAL MACHINE</span></div>
-    <div style="color:var(--muted)" class="mono">SYNC: <span id="syncTime">--</span> | <span id="latency">--</span></div>
+    <div style="color:var(--muted);display:flex;gap:12px;align-items:center" class="mono">
+      <span>SYNC: <span id="syncTime">--</span> | <span id="latency">--</span></span>
+      <span id="dataSourceStatus" style="font-size:0.65rem;color:var(--cyan)">--</span>
+    </div>
   </div>
 
   <!-- Score Gauge + Info Panel -->
@@ -392,6 +395,15 @@ function tradeRowPnl(h, isOpen) {
 function render(py) {
   document.getElementById('syncTime').textContent = py.last_updated + ' ET';
   document.getElementById('latency').textContent = py.latency_ms + 'ms';
+  
+  // Data Source Status (FlashAlpha, Alpaca, etc.)
+  if (py.data_source) {
+    const sourceEl = document.getElementById('dataSourceStatus');
+    sourceEl.textContent = py.data_source;
+    if (py.flashalpha && py.flashalpha.vwap) {
+      sourceEl.title = `VWAP: $${py.flashalpha.vwap.toFixed(2)}, Spread: ${py.flashalpha.spread}`;
+    }
+  }
 
   // Score Gauge
   const score = py.total_score ?? py.confidence ?? 0;
@@ -465,6 +477,15 @@ function render(py) {
     const srcEl = document.getElementById('strikeSource');
     srcEl.textContent = sr.data_source === 'LIVE' ? 'LIVE DATA' : 'ESTIMATED';
     srcEl.className = 'strike-source ' + (sr.data_source === 'LIVE' ? 'source-live' : 'source-est');
+    
+    // Show FlashAlpha data if available
+    if (py.flashalpha) {
+      const fa = py.flashalpha;
+      srcEl.textContent += ` + FlashAlpha`;
+      if (fa.vwap) {
+        srcEl.title = `VWAP: $${fa.vwap.toFixed(2)}, Bid/Ask: $${fa.bid}/$${fa.ask}`;
+      }
+    }
 
     document.getElementById('strikeContractName').textContent = sr.contract_label;
     const dirColor = sr.direction === 'CALL' ? 'var(--go)' : 'var(--stop)';
@@ -475,9 +496,9 @@ function render(py) {
     document.getElementById('strikeTable').innerHTML = (sr.strikes || []).map(s => {
       const isRec = s.recommended;
       return `<div class="strike-table-row ${isRec ? 'recommended' : ''}">
-        <span class="strike-table-label">${s.label}</span>
-        <span class="strike-table-val mono">$${s.strike}</span>
-        ${isRec ? '<span class="strike-table-tag">← RECOMMENDED</span>' : ''}
+        <span class="strike-table-label" style="${isRec ? 'color:var(--info);font-weight:900' : ''}">${isRec ? '👉 ' : ''}${s.label}</span>
+        <span class="strike-table-val mono" style="${isRec ? 'color:var(--info);font-weight:900;font-size:1.1em' : ''}">$${s.strike}</span>
+        ${isRec ? '<span class="strike-table-tag" style="background:var(--info);color:#000">✓ RECOMMENDED</span>' : ''}
       </div>`;
     }).join('');
 
@@ -554,9 +575,12 @@ function render(py) {
     retBadge.textContent = (retPct>=0?'+':'') + retPct.toFixed(2) + '% All Time';
     retBadge.className = 'badge ' + (retPct>=0?'pass':'fail');
     if (pt.persist_ok === false) {
-      retBadge.textContent += ' · SAVE FAILED';
+      const storageInfo = pt.storage_type ? ` [${pt.storage_type.toUpperCase()}]` : ' [LOCAL ONLY]';
+      retBadge.textContent += ' · SAVE FAILED' + storageInfo;
       retBadge.className = 'badge fail';
-      retBadge.title = pt._save_error || 'Portfolio not saved to KV';
+      retBadge.title = pt._save_error || 'Portfolio not saved to KV. Data saved locally.';
+    } else if (pt.storage_type) {
+      retBadge.textContent += ` [${pt.storage_type.toUpperCase()}]`;
     }
     
     // Render Active Positions
