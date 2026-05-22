@@ -229,8 +229,11 @@ def _get_0dte_option_chain(spy_price, vix_price):
     today_str = now_ny.strftime("%Y-%m-%d")
 
     try:
-        # 2. Get active SPY contracts for today or closest next date
-        contracts_url = f"{ALPACA_DATA_URL}/v2/options/contracts"
+        # 2. Get active SPY contracts for today or closest next date from Trading API
+        is_paper = api_key.startswith("PK")
+        trading_url = "https://paper-api.alpaca.markets" if is_paper else "https://api.alpaca.markets"
+        contracts_url = f"{trading_url}/v2/options/contracts"
+        
         params = {
             "underlying_symbol": "SPY",
             "status": "active",
@@ -239,6 +242,7 @@ def _get_0dte_option_chain(spy_price, vix_price):
         }
         r = requests.get(contracts_url, headers=ALPACA_HEADERS, params=params, timeout=5)
         if r.status_code != 200:
+            print(f"[Alpaca Options] Error fetching contracts from {contracts_url} (HTTP {r.status_code}): {r.text}")
             return None
 
         contracts_data = r.json().get("option_contracts", [])
@@ -266,14 +270,22 @@ def _get_0dte_option_chain(spy_price, vix_price):
         if not filtered_contracts:
             return None
 
-        # 4. Get snapshots for filtered contracts
+        # 4. Get snapshots for filtered contracts using Market Data API v1beta1
         symbols = [c["symbol"] for c in filtered_contracts]
         symbols_str = ",".join(symbols)
 
-        snapshots_url = f"{ALPACA_DATA_URL}/v2/options/snapshots"
+        snapshots_url = f"{ALPACA_DATA_URL}/v1beta1/options/snapshots"
         snap_params = {"symbols": symbols_str}
         snap_r = requests.get(snapshots_url, headers=ALPACA_HEADERS, params=snap_params, timeout=5)
+        
+        # If forbidden or subscription error, automatically fallback to indicative feed
+        if snap_r.status_code == 403 or "subscription" in snap_r.text.lower():
+            print(f"[Alpaca Options] 403/Subscription restriction on default feed. Retrying with indicative feed...")
+            snap_params["feed"] = "indicative"
+            snap_r = requests.get(snapshots_url, headers=ALPACA_HEADERS, params=snap_params, timeout=5)
+
         if snap_r.status_code != 200:
+            print(f"[Alpaca Options] Error fetching snapshots from {snapshots_url} (HTTP {snap_r.status_code}): {snap_r.text}")
             return None
 
         snapshots = snap_r.json().get("snapshots", {})
