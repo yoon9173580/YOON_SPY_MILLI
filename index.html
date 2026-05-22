@@ -527,7 +527,7 @@ if(sessionStorage.getItem('spy_auth')==='1') document.getElementById('authGate')
   <!-- Paper Trading -->
   <div class="pt-box" id="paperTradingWidget" style="display:none">
     <div class="pt-header">
-      <div class="pt-title">Paper Trading Log</div>
+      <div class="pt-title">Paper Trading Log <span id="ptTradingDay" class="badge" style="background:linear-gradient(135deg,var(--info),var(--purple));color:#fff;font-size:0.7rem;padding:2px 8px;margin-left:6px;border-radius:10px;font-weight:700;letter-spacing:0.5px"></span></div>
       <div id="ptReturn" class="badge">--</div>
     </div>
     <div class="pt-grid">
@@ -1021,6 +1021,10 @@ function render(py) {
   if (py.paper_trading) {
     document.getElementById('paperTradingWidget').style.display = 'block';
     const pt = py.paper_trading;
+    // Trading Day counter
+    if (py.trading_day) {
+      document.getElementById('ptTradingDay').textContent = `DAY ${py.trading_day}`;
+    }
     document.getElementById('ptValue').textContent = '$' + (pt.current_value||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     document.getElementById('ptCash').textContent = '$' + (pt.cash||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     const retBadge = document.getElementById('ptReturn');

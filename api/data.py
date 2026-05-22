@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from engines.score_engine import run_score_engine
 STARTING_BALANCE = 500.0
+TRADING_START_DATE = "2026-05-22"   # Day 1 of paper trading
 PDT_THRESHOLD = 2000.0      # accounts below this are subject to PDT
 PDT_MAX_DAY_TRADES = 3      # max day trades per rolling 5 business days
 PDT_WINDOW_DAYS = 5         # rolling business-day window
@@ -1352,12 +1353,19 @@ class handler(BaseHTTPRequestHandler):
                 portfolio_cash=portfolio.get("cash", STARTING_BALANCE), now_et=now,
             )
 
+            # Trading day counter (Day 1 = 2026-05-22)
+            start_dt = datetime.strptime(TRADING_START_DATE, "%Y-%m-%d").date()
+            today_dt = now.date()
+            trading_day = max(1, (today_dt - start_dt).days + 1)
+
             final = {
                 "last_updated": ts, "fetch_status": "SUCCESS", "latency_ms": latency,
                 "timing_ms": fetch_timing,
                 "data_source": "ALPACA + FlashAlpha" if flashalpha_spy else "ALPACA",
                 "flashalpha": flashalpha_spy,
                 "session": "REGULAR" if is_regular else "CLOSED",
+                "trading_day": trading_day,
+                "trading_start_date": TRADING_START_DATE,
                 "briefing": f"{score_result['layers']['time_window']['emoji']} [{score_result['layers']['time_window']['window']}] Regime: {score_result['layers']['regime']['regime']} | Bias: {direction_bias} | Score: {normalized}/100",
                 "total_score": normalized, "max_score": active_max, "raw_score": raw_total,
                 "signal": signal, "direction_bias": direction_bias,
