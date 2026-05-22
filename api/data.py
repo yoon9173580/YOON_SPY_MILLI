@@ -375,12 +375,25 @@ def _fetch_raw_portfolio(retries=3):
         except Exception:
             pass
         time.sleep(0.15 * (attempt + 1))
-    
+
     # Fallback to local copy
     local_data = _fetch_local_portfolio()
     if local_data:
         local_data["_storage"] = "local_file"
         return local_data
+
+    # Cross-backend migration: Upstash is primary but empty → try restful
+    if _storage_backend() == "upstash":
+        try:
+            r = requests.get(RESTFUL_KV_URL, timeout=6)
+            if r.status_code == 200:
+                data = r.json().get("data", {})
+                if isinstance(data, dict) and "cash" in data:
+                    data["_storage"] = "restful_migrated"
+                    return data
+        except Exception:
+            pass
+
     return None
 
 
@@ -402,9 +415,9 @@ def _write_raw_portfolio(pf):
             base, token = _kv_credentials()
             raw = json.dumps(payload_pf, cls=SafeEncoder)
             r = requests.post(
-                f"{base}/set/{PORTFOLIO_STORAGE_KEY}",
-                data=raw,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                base,
+                json=["SET", PORTFOLIO_STORAGE_KEY, raw],
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=10,
             )
             r.raise_for_status()
@@ -773,7 +786,13 @@ def save_portfolio(pf):
         pf["revision"] = int(remote_pf.get("revision", 0) or 0) + 1
         pf["last_saved"] = datetime.now(NY).strftime("%Y-%m-%d %H:%M:%S")
 
-        if not pf.get("_load_ok") and not pf.get("history") and not pf.get("trade_log"):
+        # Only skip save if load failed AND we have zero local data AND
+        # remote already had data (avoid wiping an existing remote store).
+        # For fresh Upstash, _load_ok=False is expected — allow save.
+        if (not pf.get("_load_ok")
+                and not pf.get("history")
+                and not pf.get("trade_log")
+                and remote_pf.get("history")):
             pf["_save_skipped"] = "load_failed_empty_local"
             return False
 
