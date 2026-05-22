@@ -3,7 +3,7 @@ name: SPY 0DTE Signal Machine
 on:
   workflow_dispatch: 
   schedule:
-    - cron: '* 13-21 * * 1-5' 
+    - cron: '*/5 13-21 * * 1-5' 
 
 jobs:
   build:

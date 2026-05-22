@@ -35,7 +35,7 @@ def _count_consecutive_losses(portfolio: dict) -> int:
     sell_trades = [h for h in history if h.get("action") == "SELL"]
 
     consecutive = 0
-    for trade in reversed(sell_trades):
+    for trade in sell_trades:  # history is newest-first (insert(0, ...))
         pnl = trade.get("pnl", trade.get("revenue", 0) - trade.get("cost", 0))
         if pnl < 0:
             consecutive += 1

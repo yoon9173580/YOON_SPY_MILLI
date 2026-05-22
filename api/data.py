@@ -14,7 +14,6 @@ import pandas as pd
 import numpy as np
 
 import sys
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from engines.score_engine import run_score_engine
 STARTING_BALANCE = 2000.0
@@ -35,7 +34,7 @@ ALPACA_HEADERS = {
     "APCA-API-KEY-ID": os.getenv("APCA_API_KEY_ID", ""),
     "APCA-API-SECRET-KEY": os.getenv("APCA_API_SECRET_KEY", ""),
 }
-FLASHALPHA_API_KEY = os.getenv("FLASHALPHA_API_KEY", "2w8k40hmZIfWsJpJjx3dX6T0j20o4evRSZtjD1df")
+FLASHALPHA_API_KEY = os.getenv("FLASHALPHA_API_KEY", "")
 FLASHALPHA_API_URL = "https://lab.flashalpha.com/v1"
 _VIX_CACHE = {"at": 0.0, "vix": 18.0, "vix3m": None}
 VIX_CACHE_SEC = int(os.getenv("VIX_CACHE_SEC", "45"))
@@ -181,23 +180,17 @@ def _fetch_market_bundle(all_stocks):
 def _snap_price(snap, key="latestTrade"):
     """Extract price from an Alpaca snapshot safely."""
     try: return float(snap[key]["p"])
-    except: return 0.0
+    except Exception: return 0.0
 
 def _snap_prev_close(snap):
     try: return float(snap["prevDailyBar"]["c"])
-    except: return 0.0
+    except Exception: return 0.0
 
 def _pct(price, prev):
     return ((price / prev) - 1) * 100 if prev > 0 else 0.0
 
 
 # ── Scoring Engine (imported) ──────────────────────────────────────
-
-def _signal_grade(score):
-    if score >= 90: return {"grade": "STRONG", "label": "STRONG SIGNAL", "emoji": "🟢", "action": "Full position", "color": "#3dd68c"}
-    elif score >= 75: return {"grade": "MODERATE", "label": "MODERATE SIGNAL", "emoji": "🟡", "action": "Half position", "color": "#f5c451"}
-    elif score >= 60: return {"grade": "WEAK", "label": "STANDBY", "emoji": "🟠", "action": "Monitor only", "color": "#f5a623"}
-    else: return {"grade": "NONE", "label": "NO SIGNAL", "emoji": "🔴", "action": "No entry", "color": "#f07178"}
 
 def _calculate_strike_recommendation(spy_price, direction_bias, signal_grade,
                                       vix_price, vwap, normalized_score,
@@ -398,7 +391,7 @@ def _write_raw_portfolio(pf):
     if last_err:
         raise last_err
     raise IOError("Failed to save portfolio locally.")
->>>>>>> Stashed changes
+
 
 
 def load_portfolio():
@@ -830,15 +823,14 @@ class handler(BaseHTTPRequestHandler):
             elif grade == "WEAK": signal = {"grade": "WEAK", "label": "STANDBY", "emoji": "🟠", "action": "Monitor only", "color": "#f5a623"}
             else: signal = {"grade": "NONE", "label": "NO SIGNAL", "emoji": "🔴", "action": "No entry", "color": "#f07178"}
 
-            t_min = now.hour * 60 + now.minute
-            is_regular = 570 <= t_min <= 960
+            # t_min/is_regular already computed above (L802-803)
             if not is_regular:
                 signal["label"] = "MARKET CLOSED"
                 signal["action"] = "Market not in session"
 
             # ── PAPER TRADING EXECUTION ──
             today_str = now.strftime("%Y-%m-%d")
-            vix_val = vix_p if vix_p > 0 else 18.0
+            vix_val = vix_p if vix_p and vix_p > 0 else 18.0
             
             # 1. Clean up stale positions from previous days
             to_remove = []

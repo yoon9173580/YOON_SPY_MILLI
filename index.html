@@ -289,6 +289,31 @@ function getScoreColor(score) {
   return 'var(--stop)';
 }
 
+function colorToRgba(color, alpha) {
+  if (!color) return null;
+  // Handle hex colors (#rrggbb or #rgb)
+  const hexMatch = color.match(/^#([0-9a-f]{3,8})$/i);
+  if (hexMatch) {
+    let hex = hexMatch[1];
+    if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+    const r = parseInt(hex.substring(0,2),16), g = parseInt(hex.substring(2,4),16), b = parseInt(hex.substring(4,6),16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+  // Handle rgb(r,g,b) → rgba(r,g,b,alpha)
+  const rgbMatch = color.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
+  if (rgbMatch) return `rgba(${rgbMatch[1]},${rgbMatch[2]},${rgbMatch[3]},${alpha})`;
+  // Handle rgba — just override alpha
+  const rgbaMatch = color.match(/^rgba\((\d+),\s*(\d+),\s*(\d+),\s*[\d.]+\)$/);
+  if (rgbaMatch) return `rgba(${rgbaMatch[1]},${rgbaMatch[2]},${rgbaMatch[3]},${alpha})`;
+  // Handle var(--xxx) — resolve via computed style, fallback to transparent
+  if (color.startsWith('var(')) {
+    const varName = color.slice(4, -1).trim();
+    const resolved = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    if (resolved) return colorToRgba(resolved, alpha);
+  }
+  return null;
+}
+
 function renderLayerBars(layers) {
   const defs = [
     {key:'regime', name:'Regime', max:40},
@@ -421,7 +446,7 @@ function render(py) {
   badge.textContent = (sig.emoji || '') + ' ' + (sig.label || py.verdict || '--');
   badge.style.color = color;
   badge.style.borderColor = color;
-  badge.style.background = color.replace(')', ',0.1)').replace('var(','rgba(').replace('rgb(','rgba(') || 'rgba(255,255,255,0.05)';
+  badge.style.background = colorToRgba(color, 0.1) || 'rgba(255,255,255,0.05)';
 
   // Direction Bias
   const dir = py.direction_bias || 'NEUTRAL';

@@ -7,6 +7,7 @@ __pycache__/
 data.json
 state.json
 paper_portfolio.json
+portfolio.json
 
 # Environments
 .venv/
@@ -19,3 +20,6 @@ env/
 # IDEs
 .vscode/
 .idea/
+
+# Vercel
+.vercel/
