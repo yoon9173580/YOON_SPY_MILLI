@@ -32,6 +32,21 @@ def bs_price(S, K, T, r, sigma, opt="call"):
         return S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
     return K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
 
+def dynamic_slippage(vix):
+    """VIX-adaptive slippage per contract side (one-way).
+    Base  : $0.03 (VIX < 20, calm market)
+    Mid   : $0.05 (VIX 20-25)
+    Elevated: $0.06 (VIX 25-30)
+    High  : $0.08 (VIX 30+)
+    """
+    if vix >= 30:
+        return 0.08
+    if vix >= 25:
+        return 0.06
+    if vix >= 20:
+        return 0.05
+    return 0.03
+
 ALPACA_DATA_URL = "https://data.alpaca.markets"
 ALPACA_HEADERS = {
     "APCA-API-KEY-ID": os.getenv("APCA_API_KEY_ID", ""),
@@ -1172,10 +1187,11 @@ class handler(BaseHTTPRequestHandler):
                             real_entry_ok = True
                 
                 if not real_entry_ok:
+                    slip = dynamic_slippage(vix_val)
                     T_entry = 5.5 / (252 * 6.5)
                     lp = bs_price(spy_p, K_buy, T_entry, 0.05, iv, opt)
                     sp = bs_price(spy_p, K_sell, T_entry, 0.05, iv, opt)
-                    net_debit = (lp - sp) * 1.03 + 0.04
+                    net_debit = (lp - sp) * 1.03 + slip * 2
 
                 if net_debit > 0.05:
                     # Risk % scales with account tier & signal strength
@@ -1246,9 +1262,10 @@ class handler(BaseHTTPRequestHandler):
                         real_exit_ok = True
                 
                 if not real_exit_ok:
+                    slip_exit = dynamic_slippage(vix_val)
                     lp = bs_price(spy_p, open_pos["K_buy"], T_rem, 0.05, iv, opt)
                     sp = bs_price(spy_p, open_pos["K_sell"], T_rem, 0.05, iv, opt)
-                    current_val = max(0, lp - sp) * 0.97 - 0.04
+                    current_val = max(0, lp - sp) * 0.97 - slip_exit * 2
 
                 current_val = max(0, current_val)
                 mark_value = round(max(0, current_val), 2)

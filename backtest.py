@@ -22,6 +22,21 @@ def bs_price(S, K, T, r, sigma, opt="call"):
         return S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
     return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
+
+def dynamic_slippage(vix, spy_range_pct=0.0):
+    """VIX-adaptive slippage per contract side.
+    Base  : $0.03 (VIX < 20, calm market)
+    Mid   : $0.05 (VIX 20-30 or intraday range > 1%)
+    High  : $0.08 (VIX 30+ or range > 2% — big news / crash)
+    """
+    if vix >= 30 or spy_range_pct >= 2.0:
+        return 0.08
+    if vix >= 25 or spy_range_pct >= 1.5:
+        return 0.06
+    if vix >= 20 or spy_range_pct >= 1.0:
+        return 0.05
+    return 0.03
+
 # ── Indicators ───────────────────────────────────────────────────
 
 def calc_rsi(series, period=14):
@@ -102,7 +117,6 @@ def run_backtest(days=30, balance=2000.0):
     dates = spy_d.index[-days:]
     r = 0.05
     SPREAD_PCT = 0.03
-    SLIPPAGE = 0.02
     TP_PCT = 1.00       # +100% take profit (let winners run)
     SL_PCT = 1.00       # no SL — max loss = debit paid
     SPREAD_WIDTH = 5    # $5 wide debit spread (more room for profit)
@@ -179,9 +193,11 @@ def run_backtest(days=30, balance=2000.0):
         T_exit = 1.0 / (252 * 6.5)   # 3:30 PM
 
         # Entry: debit = long premium - short premium
+        spy_range_pct = ((spy_h - spy_l) / spy_o) * 100 if spy_o > 0 else 0
+        slip = dynamic_slippage(vix_val, spy_range_pct)
         long_entry = bs_price(spy_o, K_buy, T_entry, r, iv, opt)
         short_entry = bs_price(spy_o, K_sell, T_entry, r, iv, opt)
-        net_debit = (long_entry - short_entry) * (1 + SPREAD_PCT) + SLIPPAGE * 2
+        net_debit = (long_entry - short_entry) * (1 + SPREAD_PCT) + slip * 2
         if net_debit <= 0.05: continue
 
         # Max profit = spread width - debit (for in-spread moves)
@@ -224,13 +240,13 @@ def run_backtest(days=30, balance=2000.0):
         # Determine exit
         exit_note = "EOD"
         if worst_val * (1 - SPREAD_PCT) <= sl_price:
-            exit_val = max(sl_price - SLIPPAGE, 0)
+            exit_val = max(sl_price - slip, 0)
             exit_note = "SL"
         elif best_val * (1 - SPREAD_PCT) >= tp_price:
-            exit_val = tp_price - SLIPPAGE
+            exit_val = tp_price - slip
             exit_note = "TP"
         else:
-            exit_val = max(eod_val * (1 - SPREAD_PCT) - SLIPPAGE, 0)
+            exit_val = max(eod_val * (1 - SPREAD_PCT) - slip, 0)
 
         # P&L
         pnl_per = (exit_val - net_debit) * 100
@@ -250,7 +266,8 @@ def run_backtest(days=30, balance=2000.0):
             "net_debit": round(net_debit, 2), "exit_val": round(exit_val, 2),
             "spy_move": round(spy_move, 2), "contracts": num_contracts,
             "pnl": round(total_pnl, 2), "balance": round(balance, 2),
-            "vix": round(vix_val, 1), "exit_type": exit_note
+            "vix": round(vix_val, 1), "exit_type": exit_note,
+            "slippage": slip
         })
 
         print(f"{ds:<11} {score:>3} {g:<2} {opt:<4} {K_buy:>5}/{K_sell:>3} ${net_debit:>5.2f} ${exit_val:>5.2f} ${spy_move:>+6.2f} ${total_pnl:>+6.0f} {exit_note:>3} ${balance:>9,.0f}")
@@ -293,10 +310,17 @@ def run_backtest(days=30, balance=2000.0):
     print(f"  Profit Factor:     {pf}")
     print(f"  Max Drawdown:      {max_dd:.1f}%")
     print(f"  Sharpe Ratio:      {sharpe:.2f}")
+    # Slippage stats
+    slips = [t.get("slippage", 0.03) for t in trades]
+    avg_slip = np.mean(slips) if slips else 0.03
+    min_slip = min(slips) if slips else 0.03
+    max_slip = max(slips) if slips else 0.03
+
     print(f"  ---")
     print(f"  Strategy:          ${SPREAD_WIDTH} wide debit spread (ATM/OTM)")
     print(f"  Exit:              TP +{TP_PCT*100:.0f}% / No SL / EOD")
-    print(f"  Spread:            {SPREAD_PCT*100:.0f}% bid-ask + ${SLIPPAGE} slippage")
+    print(f"  Spread:            {SPREAD_PCT*100:.0f}% bid-ask")
+    print(f"  Slippage:          Dynamic VIX-based (avg ${avg_slip:.3f} | range ${min_slip:.2f}-${max_slip:.2f})")
     print(f"  Score filter:      >= {MIN_SCORE} (95+ = 2x size)")
     print(f"  Sizing:            5% base, 10% on score 95+")
     print("=" * 80)
