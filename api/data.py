@@ -16,7 +16,7 @@ import numpy as np
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from engines.score_engine import run_score_engine
-STARTING_BALANCE = 2000.0
+STARTING_BALANCE = 500.0
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
