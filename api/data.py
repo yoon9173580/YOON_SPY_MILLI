@@ -267,6 +267,40 @@ def _normalize_pf(pf):
     base["positions"] = base.get("positions") or {}
     base["history"] = base.get("history") or []
     base["trade_log"] = base.get("trade_log") or []
+    # Auto-recover: rebuild trade_log from history when trade_log is empty
+    if not base["trade_log"] and base["history"]:
+        recovered = []
+        for h in base["history"]:
+            if not isinstance(h, dict):
+                continue
+            h = _ensure_trade_id(h)
+            is_closed = _is_closed_record(h)
+            evt = {
+                "event": "CLOSE" if is_closed else "OPEN",
+                "trade_id": h.get("trade_id"),
+                "date": h.get("date"),
+                "entry_time": h.get("entry_time") or h.get("time"),
+                "exit_time": h.get("exit_time"),
+                "direction": h.get("direction"),
+                "K_buy": h.get("K_buy"),
+                "K_sell": h.get("K_sell"),
+                "contracts": h.get("contracts"),
+                "entry_spy": h.get("entry_spy"),
+                "exit_spy": h.get("exit_spy"),
+                "net_debit": h.get("net_debit"),
+                "exit_val": h.get("exit_val"),
+                "exit_type": h.get("exit_type"),
+                "cost": h.get("cost"),
+                "revenue": h.get("revenue"),
+                "pnl": h.get("pnl"),
+                "realized_pnl": h.get("realized_pnl"),
+                "pnl_pct": h.get("pnl_pct"),
+                "win": h.get("win"),
+                "logged_at": h.get("exit_ts") or h.get("entry_ts"),
+            }
+            recovered.append(evt)
+        if recovered:
+            base["trade_log"] = recovered
     base["recent_trades"] = base.get("recent_trades") or _build_recent_trades(base)
     return base
 
@@ -276,7 +310,8 @@ def _storage_backend():
     return "restful"
 
 
-LOCAL_PORTFOLIO_FILE = "portfolio.json"
+# Use /tmp on Vercel serverless (read-only project filesystem)
+LOCAL_PORTFOLIO_FILE = os.path.join("/tmp" if os.getenv("VERCEL") else ".", "portfolio.json")
 
 def _fetch_local_portfolio():
     if os.path.exists(LOCAL_PORTFOLIO_FILE):
@@ -386,11 +421,17 @@ def _write_raw_portfolio(pf):
     if local_ok:
         if not remote_ok:
             pf["_save_error"] = f"Remote failed ({last_err}), but local copy saved successfully."
+        pf["_remote_ok"] = remote_ok
         return True
-    
+
+    # Remote saved but local failed (e.g., Vercel read-only filesystem)
+    if remote_ok:
+        pf["_remote_ok"] = True
+        return True
+
     if last_err:
         raise last_err
-    raise IOError("Failed to save portfolio locally.")
+    raise IOError("Failed to save portfolio to any backend.")
 
 
 
@@ -702,17 +743,17 @@ def save_portfolio(pf):
         merged_history = _merge_trade_records((remote_pf.get("history") or []) + (pf.get("history") or []))
         merged_log = _merge_trade_events((remote_pf.get("trade_log") or []) + (pf.get("trade_log") or []))
 
-        # Never wipe stored trades when this request failed to load remote state.
-        if not pf.get("history") and remote_pf.get("history"):
-            pf["history"] = remote_pf["history"]
-        else:
-            pf["history"] = _cap_list([
-                _finalize_closed_record(h) if _is_closed_record(h) else h for h in merged_history
-            ])
-        if not pf.get("trade_log") and remote_pf.get("trade_log"):
-            pf["trade_log"] = remote_pf["trade_log"]
-        else:
-            pf["trade_log"] = _cap_list(merged_log)
+        # Merge history — never let merge produce fewer records than local
+        local_hist = pf.get("history") or []
+        finalized_hist = _cap_list([
+            _finalize_closed_record(h) if _is_closed_record(h) else h for h in merged_history
+        ])
+        pf["history"] = finalized_hist if len(finalized_hist) >= len(local_hist) else local_hist
+
+        # Merge trade_log — never let merge produce fewer records than local
+        local_log = pf.get("trade_log") or []
+        finalized_log = _cap_list(merged_log)
+        pf["trade_log"] = finalized_log if len(finalized_log) >= len(local_log) else local_log
 
         if remote_pf.get("initial_balance") and not pf.get("_seeded_balance"):
             pf.setdefault("initial_balance", remote_pf["initial_balance"])
@@ -731,7 +772,7 @@ def save_portfolio(pf):
 
         _write_raw_portfolio(pf)
         pf["_save_ok"] = True
-        pf.pop("_save_error", None)
+        # Keep _save_error — provides partial failure info to frontend UI
         return True
     except Exception as e:
         pf["_save_error"] = str(e)
