@@ -1436,11 +1436,14 @@ document.getElementById('thTabs').addEventListener('click', e => {
   }
 })();
 
-function showAccessKeyModal() {
+function showAccessKeyModal(googleClientId) {
   if (document.getElementById('accessKeyModal')) {
     // If modal is already open, the retry was invalid
     const errEl = document.getElementById('accessKeyErr');
-    if (errEl) errEl.style.display = 'block';
+    if (errEl) {
+      errEl.textContent = "⚠️ Invalid Access Key. Try again.";
+      errEl.style.display = 'block';
+    }
     const input = document.getElementById('accessKeyInput');
     if (input) {
       input.value = '';
@@ -1465,13 +1468,23 @@ function showAccessKeyModal() {
   modal.style.zIndex = '99999';
   modal.style.animation = 'fadeIn 0.3s ease forwards';
   
+  const googleBtnHtml = googleClientId ? `
+    <div style="display: flex; align-items: center; margin: 1rem 0; width: 100%;">
+      <hr style="flex: 1; border: none; border-top: 1px solid rgba(255,255,255,0.08);">
+      <span style="padding: 0 10px; color: var(--muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px;">or</span>
+      <hr style="flex: 1; border: none; border-top: 1px solid rgba(255,255,255,0.08);">
+    </div>
+    <div id="googleBtnContainer" style="display: flex; justify-content: center; width: 100%; min-height: 40px;"></div>
+  ` : '';
+  
   modal.innerHTML = `
-    <div style="background: rgba(30, 30, 38, 0.75); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 2rem; width: 340px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.4); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); transform: scale(0.9); animation: scaleUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;">
+    <div style="background: rgba(30, 30, 38, 0.75); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 2rem; width: 340px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.4); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); transform: scale(0.9); animation: scaleUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; display: flex; flex-direction: column; align-items: center; box-sizing: border-box;">
       <div style="font-size: 2.2rem; margin-bottom: 0.8rem;">🔒</div>
       <h3 style="color: #fff; font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; font-family: 'Outfit', sans-serif;">Access Restricted</h3>
-      <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; line-height: 1.4;">This system is protected. Please enter your Access Key to unlock the terminal.</p>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; line-height: 1.4;">This system is protected. Please unlock the terminal to view market analytics.</p>
       <input type="password" id="accessKeyInput" placeholder="Enter Access Key..." style="width: 100%; padding: 0.75rem 1rem; background: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; color: #fff; text-align: center; margin-bottom: 1rem; font-size: 0.95rem; outline: none; box-sizing: border-box; transition: border-color 0.2s;" onfocus="this.style.borderColor='var(--info)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
       <button id="accessKeyBtn" style="width: 100%; padding: 0.75rem; background: linear-gradient(135deg, var(--info), var(--purple)); border: none; border-radius: 8px; color: #fff; font-weight: 700; font-size: 0.9rem; cursor: pointer; transition: transform 0.1s, opacity 0.2s;" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'" onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'">Unlock Terminal</button>
+      ${googleBtnHtml}
       <div id="accessKeyErr" style="color: var(--stop); font-size: 0.75rem; margin-top: 0.8rem; display: none; font-weight: 600;">⚠️ Invalid Access Key. Try again.</div>
     </div>
     <style>
@@ -1482,13 +1495,36 @@ function showAccessKeyModal() {
   
   document.body.appendChild(modal);
   
-  const submit = () => {
+  const submit = async () => {
     const val = document.getElementById('accessKeyInput').value.trim();
-    if (val) {
-      localStorage.setItem('spy_api_access_key', val);
-      document.getElementById('accessKeyModal').remove();
-      // Retry loading data immediately
-      loadData();
+    if (!val) return;
+    
+    try {
+      let r = await fetch('/api/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: val }),
+        credentials: 'include'
+      });
+      
+      if (r.ok) {
+        localStorage.removeItem('spy_api_access_key');
+        document.getElementById('accessKeyModal').remove();
+        loadData();
+      } else {
+        const errEl = document.getElementById('accessKeyErr');
+        if (errEl) {
+          errEl.textContent = "⚠️ Invalid Access Key. Try again.";
+          errEl.style.display = 'block';
+        }
+        const input = document.getElementById('accessKeyInput');
+        if (input) {
+          input.value = '';
+          input.focus();
+        }
+      }
+    } catch(e) {
+      console.error('Unlock error:', e);
     }
   };
   
@@ -1502,6 +1538,57 @@ function showAccessKeyModal() {
     const input = document.getElementById('accessKeyInput');
     if (input) input.focus();
   }, 100);
+
+  if (googleClientId) {
+    if (!window.google) {
+      const script = document.createElement('script');
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        initGoogleSignIn(googleClientId);
+      };
+      document.head.appendChild(script);
+    } else {
+      initGoogleSignIn(googleClientId);
+    }
+  }
+}
+
+function initGoogleSignIn(clientId) {
+  google.accounts.id.initialize({
+    client_id: clientId,
+    callback: handleCredentialResponse
+  });
+  google.accounts.id.renderButton(
+    document.getElementById("googleBtnContainer"),
+    { theme: "outline", size: "large", width: 274 }
+  );
+}
+
+async function handleCredentialResponse(response) {
+  const credential = response.credential;
+  try {
+    let r = await fetch('/api/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential: credential }),
+      credentials: 'include'
+    });
+    
+    if (r.ok) {
+      document.getElementById('accessKeyModal').remove();
+      loadData();
+    } else {
+      const errEl = document.getElementById('accessKeyErr');
+      if (errEl) {
+        errEl.textContent = "⚠️ Google Auth unauthorized. Contact Administrator.";
+        errEl.style.display = 'block';
+      }
+    }
+  } catch (e) {
+    console.error('Google Sign-In response error:', e);
+  }
 }
 
 async function loadData() {
@@ -1510,6 +1597,7 @@ async function loadData() {
     const key = localStorage.getItem('spy_api_access_key') || '';
     const requestOptions = {
       cache: 'no-store',
+      credentials: 'include',
       headers: {}
     };
     if (key) {
@@ -1519,7 +1607,8 @@ async function loadData() {
     let r = await fetch('/api/data', requestOptions);
     
     if (r.status === 401) {
-      showAccessKeyModal();
+      const respData = await r.json().catch(() => ({}));
+      showAccessKeyModal(respData.google_client_id);
       return;
     }
     

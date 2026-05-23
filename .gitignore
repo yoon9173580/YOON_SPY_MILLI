@@ -16,6 +16,13 @@ ENV/
 env.bak
 env/
 .env
+.env.local
+.env.production
+gitignore.env
+*.env
+keys.json
+alpaca-*.json
+alpace-*.json
 
 # IDEs
 .vscode/

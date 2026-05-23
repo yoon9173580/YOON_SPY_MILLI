@@ -1175,6 +1175,21 @@ ALLOWED_ORIGINS = {
     "http://127.0.0.1:5173",
 }
 
+def _verify_google_token(id_token):
+    """Verify Google Sign-In JWT token using Google OAuth2 tokeninfo endpoint."""
+    if not id_token:
+        return None
+    try:
+        r = requests.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}", timeout=5)
+        if r.status_code == 200:
+            payload = r.json()
+            # Basic validation
+            if payload.get("email_verified") == "true" or payload.get("email_verified") is True:
+                return payload
+    except Exception as e:
+        print(f"[Google ID Token Verification Error] {e}")
+    return None
+
 class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         origin = self.headers.get("Origin", "")
@@ -1183,10 +1198,90 @@ class handler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', origin)
         else:
             self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, x-api-key')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, x-api-key, Cookie')
+        self.send_header('Access-Control-Allow-Credentials', 'true')
         self.send_header('Access-Control-Max-Age', '86400')
         self.end_headers()
+
+    def do_POST(self):
+        # We only handle /api/unlock
+        if self.path.split("?")[0] != "/api/unlock":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        origin = self.headers.get("Origin", "")
+        
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            payload = json.loads(post_data) if post_data else {}
+            
+            password = payload.get("password")
+            credential = payload.get("credential")
+            
+            authorized = False
+            correct_password = os.getenv("UNLOCK_PASSWORD") or os.getenv("APP_SECRET_KEY")
+            
+            # 1. Check Password Auth
+            if password and correct_password and password == correct_password:
+                authorized = True
+                
+            # 2. Check Google Credential Auth
+            elif credential:
+                google_payload = _verify_google_token(credential)
+                if google_payload:
+                    email = google_payload.get("email")
+                    allowed_emails_str = os.getenv("ALLOWED_EMAILS", "")
+                    allowed_emails = {e.strip().lower() for e in allowed_emails_str.split(",") if e.strip()}
+                    if email and email.lower() in allowed_emails:
+                        authorized = True
+                        print(f"[Google Auth Success] Authorized {email}")
+                    else:
+                        print(f"[Google Auth Blocked] Email {email} not in ALLOWED_EMAILS")
+            
+            if authorized:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header('Access-Control-Allow-Origin', origin)
+                else:
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                
+                # Issue secure httpOnly cookie access_token=valid
+                # Max-Age: 7 days (604800)
+                # Secure; SameSite=Strict; Path=/; HttpOnly
+                # For local development we can also support it. SameSite=Strict ensures no CSRF.
+                cookie_str = "access_token=valid; Path=/; Max-Age=604800; HttpOnly; Secure; SameSite=Strict"
+                self.send_header('Set-Cookie', cookie_str)
+                self.send_header('Access-Control-Allow-Credentials', 'true')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode('utf-8'))
+                return
+            else:
+                self.send_response(401)
+                self.send_header('Content-Type', 'application/json')
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header('Access-Control-Allow-Origin', origin)
+                else:
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Credentials', 'true')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "Unauthorized"}).encode('utf-8'))
+                return
+                
+        except Exception as e:
+            err_msg = traceback.format_exc()
+            print(f"[Error in POST /api/unlock] {err_msg}")
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            if origin in ALLOWED_ORIGINS:
+                self.send_header('Access-Control-Allow-Origin', origin)
+            else:
+                self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Internal Server Error"}).encode('utf-8'))
 
     def do_GET(self):
         # Resolve client IP & Check Rate limit
@@ -1204,15 +1299,19 @@ class handler(BaseHTTPRequestHandler):
             return
 
         # API Authentication
-        secret_key = os.getenv("APP_SECRET_KEY")
-        if secret_key:
+        correct_password = os.getenv("UNLOCK_PASSWORD") or os.getenv("APP_SECRET_KEY")
+        if correct_password:
+            # Check for access_token cookie
+            cookie_header = self.headers.get("Cookie", "")
+            has_cookie = "access_token=valid" in cookie_header
+            
             client_key = self.headers.get("X-API-Key") or self.headers.get("x-api-key")
             if not client_key and "?" in self.path:
                 from urllib.parse import parse_qs, urlparse
                 query_params = parse_qs(urlparse(self.path).query)
                 client_key = query_params.get("key", [None])[0]
                 
-            if client_key != secret_key:
+            if not has_cookie and client_key != correct_password:
                 origin = self.headers.get("Origin", "")
                 self.send_response(401)
                 self.send_header('Content-Type', 'application/json')
@@ -1220,8 +1319,15 @@ class handler(BaseHTTPRequestHandler):
                     self.send_header('Access-Control-Allow-Origin', origin)
                 else:
                     self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Credentials', 'true')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Unauthorized", "message": "Invalid or missing Access Key"}).encode('utf-8'))
+                
+                google_client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+                self.wfile.write(json.dumps({
+                    "error": "Unauthorized", 
+                    "message": "Invalid or missing session cookie / Access Key",
+                    "google_client_id": google_client_id
+                }).encode('utf-8'))
                 return
 
         start_time = time.perf_counter()
