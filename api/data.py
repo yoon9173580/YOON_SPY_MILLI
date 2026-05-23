@@ -165,8 +165,72 @@ def _flashalpha_spy_summary():
     return None
 
 
+def is_market_open(dt):
+    """Detect if US stock market is currently open (9:30 AM to 4:00 PM Eastern Time, weekdays only, no NYSE holidays)."""
+    # 1. Weekdays only (Monday=0 to Sunday=6)
+    if dt.weekday() >= 5:
+        return False
+    # 2. NYSE holidays 2026
+    nyse_holidays_2026 = {
+        datetime(2026, 1, 1).date(),    # New Year's Day
+        datetime(2026, 1, 19).date(),   # MLK Day
+        datetime(2026, 2, 16).date(),   # Presidents' Day
+        datetime(2026, 4, 3).date(),    # Good Friday
+        datetime(2026, 5, 25).date(),   # Memorial Day
+        datetime(2026, 6, 19).date(),   # Juneteenth
+        datetime(2026, 7, 3).date(),    # Independence Day (observed)
+        datetime(2026, 9, 7).date(),    # Labor Day
+        datetime(2026, 11, 26).date(),  # Thanksgiving
+        datetime(2026, 12, 25).date(),  # Christmas
+    }
+    if dt.date() in nyse_holidays_2026:
+        return False
+    # 3. Regular hours: 9:30 AM to 4:00 PM Eastern
+    t_min = dt.hour * 60 + dt.minute
+    return 570 <= t_min <= 960
+
+_MARKET_DATA_CACHE = {
+    "fetched_at": 0.0,
+    "snaps": {},
+    "spy_h": None,
+    "vix": (18.0, None),
+    "flashalpha": None,
+    "timing_ms": {}
+}
+
 def _fetch_market_bundle(all_stocks):
-    """Parallel market data fetch (snapshots, bars, VIX, portfolio, FlashAlpha)."""
+    """Parallel market data fetch (snapshots, bars, VIX, portfolio, FlashAlpha) with dynamic caching."""
+    global _MARKET_DATA_CACHE
+    
+    now = datetime.now(NY)
+    m_open = is_market_open(now)
+    ttl = 10 if m_open else 1800  # 10 seconds if open, 30 minutes if closed
+    
+    current_time = time.time()
+    use_cache = False
+    if _MARKET_DATA_CACHE["fetched_at"] > 0:
+        elapsed = current_time - _MARKET_DATA_CACHE["fetched_at"]
+        if elapsed < ttl:
+            use_cache = True
+            
+    if use_cache:
+        # Build cached output
+        out = {
+            "snaps": _MARKET_DATA_CACHE["snaps"].copy(),
+            "spy_h": _MARKET_DATA_CACHE["spy_h"].copy(),
+            "vix": _MARKET_DATA_CACHE["vix"],
+            "flashalpha": _MARKET_DATA_CACHE["flashalpha"],
+        }
+        t0 = time.perf_counter()
+        out["portfolio"] = load_portfolio()
+        
+        # Mix in cached timing info + fresh portfolio time
+        out["timing_ms"] = _MARKET_DATA_CACHE["timing_ms"].copy()
+        out["timing_ms"]["portfolio_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        out["timing_ms"]["cached"] = True
+        return out
+
+    # Otherwise fetch fresh
     timing = {}
     out = {"snaps": {}, "spy_h": pd.DataFrame(), "vix": (18.0, None), "portfolio": _default_pf(), "flashalpha": None}
 
@@ -192,6 +256,15 @@ def _fetch_market_bundle(all_stocks):
                 out[key] = fut.result()
             except Exception as exc:
                 timing[f"{key}_error"] = str(exc)
+                
+    # Update cache
+    _MARKET_DATA_CACHE["fetched_at"] = current_time
+    _MARKET_DATA_CACHE["snaps"] = out["snaps"].copy() if out["snaps"] else {}
+    _MARKET_DATA_CACHE["spy_h"] = out["spy_h"].copy()
+    _MARKET_DATA_CACHE["vix"] = out["vix"]
+    _MARKET_DATA_CACHE["flashalpha"] = out["flashalpha"]
+    _MARKET_DATA_CACHE["timing_ms"] = timing.copy()
+    
     out["timing_ms"] = timing
     return out
 
@@ -219,6 +292,11 @@ def _get_0dte_option_chain(spy_price, vix_price):
       or None if API fails or lacks permission.
     """
     if not spy_price:
+        return None
+        
+    # Optimization: Skip API calls and let it fallback to BS directly when market is closed
+    now_ny = datetime.now(NY)
+    if not is_market_open(now_ny):
         return None
     api_key = ALPACA_HEADERS.get("APCA-API-KEY-ID", "")
     api_secret = ALPACA_HEADERS.get("APCA-API-SECRET-KEY", "")
@@ -1041,8 +1119,111 @@ def save_portfolio(pf):
 
 # ── Handler ─────────────────────────────────────────────────────────
 
+_IN_MEM_LIMITS = {}
+
+def check_rate_limit(ip, limit=15):
+    """Client IP Rate Limiter. 15 requests per minute."""
+    global _IN_MEM_LIMITS
+    minute_str = datetime.now(NY).strftime("%Y%m%d%H%M")
+    
+    # 1. Try Upstash Redis Rate Limiting if available
+    base, token = _kv_credentials()
+    if base and token:
+        try:
+            key = f"rate_limit:{ip}:{minute_str}"
+            url = f"{base}/pipeline"
+            commands = [
+                ["INCR", key],
+                ["EXPIRE", key, "60"]
+            ]
+            r = requests.post(url, json=commands, headers={"Authorization": f"Bearer {token}"}, timeout=2)
+            if r.status_code == 200:
+                res = r.json()
+                if isinstance(res, list) and len(res) > 0:
+                    count = res[0].get("result", 1)
+                    if isinstance(count, int) and count > limit:
+                        return False
+                    return True
+        except Exception as e:
+            print(f"[Rate Limit KV Error] {e}")
+            # Fall back to in-memory on KV error
+            
+    # 2. In-Memory Fallback Rate Limiting
+    # Clean up old keys from memory
+    for client in list(_IN_MEM_LIMITS.keys()):
+        _IN_MEM_LIMITS[client] = {k: v for k, v in _IN_MEM_LIMITS[client].items() if k == minute_str}
+        if not _IN_MEM_LIMITS[client]:
+            del _IN_MEM_LIMITS[client]
+            
+    if ip not in _IN_MEM_LIMITS:
+        _IN_MEM_LIMITS[ip] = {}
+        
+    current_count = _IN_MEM_LIMITS[ip].get(minute_str, 0)
+    if current_count >= limit:
+        return False
+        
+    _IN_MEM_LIMITS[ip][minute_str] = current_count + 1
+    return True
+
+ALLOWED_ORIGINS = {
+    "https://hannaealgo.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+}
+
 class handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        origin = self.headers.get("Origin", "")
+        self.send_response(200)
+        if origin in ALLOWED_ORIGINS:
+            self.send_header('Access-Control-Allow-Origin', origin)
+        else:
+            self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, x-api-key')
+        self.send_header('Access-Control-Max-Age', '86400')
+        self.end_headers()
+
     def do_GET(self):
+        # Resolve client IP & Check Rate limit
+        ip = self.headers.get("x-forwarded-for", "127.0.0.1").split(',')[0].strip()
+        if not check_rate_limit(ip, 15):
+            origin = self.headers.get("Origin", "")
+            self.send_response(429)
+            self.send_header('Content-Type', 'application/json')
+            if origin in ALLOWED_ORIGINS:
+                self.send_header('Access-Control-Allow-Origin', origin)
+            else:
+                self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Too Many Requests", "message": "Rate limit exceeded. Max 15 requests per minute."}).encode('utf-8'))
+            return
+
+        # API Authentication
+        secret_key = os.getenv("APP_SECRET_KEY")
+        if secret_key:
+            client_key = self.headers.get("X-API-Key") or self.headers.get("x-api-key")
+            if not client_key and "?" in self.path:
+                from urllib.parse import parse_qs, urlparse
+                query_params = parse_qs(urlparse(self.path).query)
+                client_key = query_params.get("key", [None])[0]
+                
+            if client_key != secret_key:
+                origin = self.headers.get("Origin", "")
+                self.send_response(401)
+                self.send_header('Content-Type', 'application/json')
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header('Access-Control-Allow-Origin', origin)
+                else:
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Unauthorized", "message": "Invalid or missing Access Key"}).encode('utf-8'))
+                return
+
         start_time = time.perf_counter()
         now = datetime.now(NY)
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -1400,16 +1581,35 @@ class handler(BaseHTTPRequestHandler):
                 "paper_trading": portfolio,
             }
 
+            origin = self.headers.get("Origin", "")
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            if origin in ALLOWED_ORIGINS:
+                self.send_header('Access-Control-Allow-Origin', origin)
+            else:
+                self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
             self.end_headers()
             self.wfile.write(json.dumps(final, cls=SafeEncoder).encode('utf-8'))
 
         except Exception as e:
+            err_msg = traceback.format_exc()
+            print(f"[Error in API] {err_msg}")
+            
+            origin = self.headers.get("Origin", "")
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            if origin in ALLOWED_ORIGINS:
+                self.send_header('Access-Control-Allow-Origin', origin)
+            else:
+                self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}).encode('utf-8'))
+            
+            # Hide detailed traceback in production/Vercel
+            is_prod = os.getenv("VERCEL") is not None
+            err_resp = {
+                "error": "Internal Server Error",
+                "fetch_status": "ERROR",
+                "message": str(e) if not is_prod else "An error occurred on the server."
+            }
+            self.wfile.write(json.dumps(err_resp).encode('utf-8'))

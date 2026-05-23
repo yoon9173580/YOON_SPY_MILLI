@@ -1424,17 +1424,117 @@ document.getElementById('thTabs').addEventListener('click', e => {
   if (window._tradeHistData) renderTradeList(window._tradeHistData, window._maxAbsPnl, filter);
 });
 
+// Resolve Access Key from URL parameter first, then localStorage
+(function() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlKey = urlParams.get('key');
+  if (urlKey) {
+    localStorage.setItem('spy_api_access_key', urlKey);
+    // Strip query key from URL to keep address bar clean
+    const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+    window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+  }
+})();
+
+function showAccessKeyModal() {
+  if (document.getElementById('accessKeyModal')) {
+    // If modal is already open, the retry was invalid
+    const errEl = document.getElementById('accessKeyErr');
+    if (errEl) errEl.style.display = 'block';
+    const input = document.getElementById('accessKeyInput');
+    if (input) {
+      input.value = '';
+      input.focus();
+    }
+    return;
+  }
+  
+  const modal = document.createElement('div');
+  modal.id = 'accessKeyModal';
+  modal.style.position = 'fixed';
+  modal.style.top = '0';
+  modal.style.left = '0';
+  modal.style.width = '100vw';
+  modal.style.height = '100vh';
+  modal.style.background = 'rgba(10, 10, 12, 0.7)';
+  modal.style.backdropFilter = 'blur(12px)';
+  modal.style.webkitBackdropFilter = 'blur(12px)';
+  modal.style.display = 'flex';
+  modal.style.justifyContent = 'center';
+  modal.style.alignItems = 'center';
+  modal.style.zIndex = '99999';
+  modal.style.animation = 'fadeIn 0.3s ease forwards';
+  
+  modal.innerHTML = `
+    <div style="background: rgba(30, 30, 38, 0.75); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 2rem; width: 340px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.4); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); transform: scale(0.9); animation: scaleUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;">
+      <div style="font-size: 2.2rem; margin-bottom: 0.8rem;">🔒</div>
+      <h3 style="color: #fff; font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; font-family: 'Outfit', sans-serif;">Access Restricted</h3>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; line-height: 1.4;">This system is protected. Please enter your Access Key to unlock the terminal.</p>
+      <input type="password" id="accessKeyInput" placeholder="Enter Access Key..." style="width: 100%; padding: 0.75rem 1rem; background: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; color: #fff; text-align: center; margin-bottom: 1rem; font-size: 0.95rem; outline: none; box-sizing: border-box; transition: border-color 0.2s;" onfocus="this.style.borderColor='var(--info)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+      <button id="accessKeyBtn" style="width: 100%; padding: 0.75rem; background: linear-gradient(135deg, var(--info), var(--purple)); border: none; border-radius: 8px; color: #fff; font-weight: 700; font-size: 0.9rem; cursor: pointer; transition: transform 0.1s, opacity 0.2s;" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'" onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'">Unlock Terminal</button>
+      <div id="accessKeyErr" style="color: var(--stop); font-size: 0.75rem; margin-top: 0.8rem; display: none; font-weight: 600;">⚠️ Invalid Access Key. Try again.</div>
+    </div>
+    <style>
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes scaleUp { from { transform: scale(0.9); } to { transform: scale(1); } }
+    </style>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  const submit = () => {
+    const val = document.getElementById('accessKeyInput').value.trim();
+    if (val) {
+      localStorage.setItem('spy_api_access_key', val);
+      document.getElementById('accessKeyModal').remove();
+      // Retry loading data immediately
+      loadData();
+    }
+  };
+  
+  document.getElementById('accessKeyBtn').onclick = submit;
+  document.getElementById('accessKeyInput').onkeydown = (e) => {
+    if (e.key === 'Enter') submit();
+  };
+  
+  // Focus input
+  setTimeout(() => {
+    const input = document.getElementById('accessKeyInput');
+    if (input) input.focus();
+  }, 100);
+}
+
 async function loadData() {
   const t0 = performance.now();
   try {
-    let r = await fetch('/api/data', {cache:'no-store'});
-    if (!r.ok) r = await fetch('data.json', {cache:'no-store'});
+    const key = localStorage.getItem('spy_api_access_key') || '';
+    const requestOptions = {
+      cache: 'no-store',
+      headers: {}
+    };
+    if (key) {
+      requestOptions.headers['X-API-Key'] = key;
+    }
+    
+    let r = await fetch('/api/data', requestOptions);
+    
+    if (r.status === 401) {
+      showAccessKeyModal();
+      return;
+    }
+    
+    if (!r.ok) {
+      r = await fetch('data.json', {cache:'no-store'});
+    }
+    
     if (r.ok) {
       const data = await r.json();
       data.latency_ms = Math.round((data.latency_ms||0) + (performance.now()-t0));
       render(data);
     }
-  } catch(e) { console.error('Fetch error:', e); }
+  } catch(e) { 
+    console.error('Fetch error:', e); 
+  }
   setTimeout(loadData, 15000);
 }
 loadData();
