@@ -1,7 +1,7 @@
 """
 Vercel Serverless API — /api/data
 SPY 0DTE Signal Machine — 7-Layer Score Engine
-Hybrid: Alpaca (stocks) + Yahoo quote (VIX); options priced via BS, not chain fetch
+Hybrid: Alpaca + Yahoo VIX + Google SSO & Session Cookie Hardening (Last Update: 2026-05-23)
 """
 import math, json, os, time, traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
