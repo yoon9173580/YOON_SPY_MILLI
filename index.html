@@ -392,31 +392,95 @@ body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%
 </style>
 </head>
 <body>
-<!-- Password Gate -->
+<!-- Auth Gate — server-side cookie + optional Google SSO -->
 <div id="authGate" style="position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;align-items:center;justify-content:center">
   <div style="background:var(--surface);backdrop-filter:blur(24px);border:1px solid var(--border2);border-radius:20px;padding:2.5rem;text-align:center;max-width:360px;width:90%">
     <div style="font-size:1.6rem;font-weight:900;letter-spacing:-1px;margin-bottom:0.3rem;background:linear-gradient(135deg,var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent">SPY 0DTE</div>
     <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.2em;margin-bottom:1.5rem">Signal Machine — Restricted Access</div>
     <input id="authInput" type="password" placeholder="Enter password" autocomplete="off"
       style="width:100%;padding:0.7rem 1rem;background:rgba(255,255,255,0.04);border:1px solid var(--border2);border-radius:10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:0.85rem;outline:none;text-align:center;letter-spacing:2px;margin-bottom:0.8rem">
-    <button id="authBtn" onclick="tryAuth()"
+    <button id="authBtn" onclick="tryUnlock()"
       style="width:100%;padding:0.6rem;background:linear-gradient(135deg,rgba(91,140,255,0.3),rgba(167,139,250,0.3));border:1px solid rgba(167,139,250,0.3);border-radius:10px;color:var(--text);font-weight:700;font-size:0.8rem;cursor:pointer;letter-spacing:0.05em">UNLOCK</button>
+    <!-- Google SSO — injected dynamically when GOOGLE_CLIENT_ID is available -->
+    <div id="gDivider" style="display:none;align-items:center;gap:8px;margin:10px 0">
+      <div style="flex:1;height:1px;background:var(--border2)"></div>
+      <span style="font-size:0.65rem;color:var(--muted)">OR</span>
+      <div style="flex:1;height:1px;background:var(--border2)"></div>
+    </div>
+    <div id="gBtn" style="display:none;justify-content:center"></div>
     <div id="authError" style="color:var(--stop);font-size:0.7rem;margin-top:0.6rem;opacity:0;transition:opacity 0.3s">ACCESS DENIED</div>
+    <div id="authSpin" style="display:none;font-size:0.7rem;color:var(--muted);margin-top:0.5rem">Verifying…</div>
   </div>
 </div>
 <script>
-function tryAuth(){
-  if(document.getElementById('authInput').value==='WERICH!'){
-    sessionStorage.setItem('spy_auth','1');
-    document.getElementById('authGate').style.display='none';
-  } else {
-    document.getElementById('authError').style.opacity='1';
-    document.getElementById('authInput').value='';
-    setTimeout(()=>document.getElementById('authError').style.opacity='0',2000);
-  }
+// ── Gate helpers ───────────────────────────────────────────────────────
+function _gateError(){
+  const el=document.getElementById('authError');
+  el.style.opacity='1';
+  document.getElementById('authInput').value='';
+  setTimeout(()=>el.style.opacity='0',2500);
 }
-document.getElementById('authInput').addEventListener('keydown',e=>{if(e.key==='Enter')tryAuth()});
-if(sessionStorage.getItem('spy_auth')==='1') document.getElementById('authGate').style.display='none';
+function _gateSpin(on){document.getElementById('authSpin').style.display=on?'block':'none';}
+function _dismissGate(){document.getElementById('authGate').style.display='none';}
+
+// Server-side password unlock
+async function tryUnlock(){
+  const pw=document.getElementById('authInput').value.trim();
+  if(!pw)return;
+  _gateSpin(true);
+  try{
+    const r=await fetch('/api/unlock',{
+      method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password:pw})
+    });
+    r.ok ? _dismissGate() : _gateError();
+  }catch(e){_gateError();}
+  finally{_gateSpin(false);}
+}
+
+// Google SSO callback
+async function _googleCallback(resp){
+  _gateSpin(true);
+  try{
+    const r=await fetch('/api/unlock',{
+      method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({google_token:resp.credential})
+    });
+    r.ok ? _dismissGate() : _gateError();
+  }catch(e){_gateError();}
+  finally{_gateSpin(false);}
+}
+
+// Mount Google button if clientId provided
+function _mountGoogle(clientId){
+  if(!clientId)return;
+  document.getElementById('gDivider').style.display='flex';
+  document.getElementById('gBtn').style.display='flex';
+  const s=document.createElement('script');
+  s.src='https://accounts.google.com/gsi/client';
+  s.onload=()=>{
+    google.accounts.id.initialize({client_id:clientId,callback:_googleCallback,auto_select:false});
+    google.accounts.id.renderButton(document.getElementById('gBtn'),
+      {theme:'filled_black',shape:'pill',text:'signin_with',size:'large',width:'300'});
+  };
+  document.head.appendChild(s);
+}
+
+// On page load: probe API — if 200 already authed (cookie), dismiss gate
+// If 401, show gate + mount Google button from response
+document.getElementById('authInput').addEventListener('keydown',e=>{if(e.key==='Enter')tryUnlock();});
+(async()=>{
+  try{
+    const r=await fetch('/api/data',{cache:'no-store',credentials:'include'});
+    if(r.ok){_dismissGate();return;}
+    if(r.status===401){
+      const d=await r.json().catch(()=>({}));
+      _mountGoogle(d.google_client_id||'');
+    }
+  }catch(e){/* offline – gate stays */}
+})();
 </script>
 
 <div class="wrap">

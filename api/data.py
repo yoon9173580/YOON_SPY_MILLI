@@ -1298,20 +1298,21 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Too Many Requests", "message": "Rate limit exceeded. Max 15 requests per minute."}).encode('utf-8'))
             return
 
-        # API Authentication
-        correct_password = os.getenv("UNLOCK_PASSWORD") or os.getenv("APP_SECRET_KEY")
-        if correct_password:
-            # Check for access_token cookie
-            cookie_header = self.headers.get("Cookie", "")
-            has_cookie = "access_token=valid" in cookie_header
-            
-            client_key = self.headers.get("X-API-Key") or self.headers.get("x-api-key")
-            if not client_key and "?" in self.path:
-                from urllib.parse import parse_qs, urlparse
-                query_params = parse_qs(urlparse(self.path).query)
-                client_key = query_params.get("key", [None])[0]
-                
-            if not has_cookie and client_key != correct_password:
+        # API Authentication — always enforced
+        correct_password = os.getenv("UNLOCK_PASSWORD") or os.getenv("APP_SECRET_KEY", "")
+        # Check for access_token cookie
+        cookie_header = self.headers.get("Cookie", "")
+        has_cookie = "access_token=valid" in cookie_header
+
+        client_key = self.headers.get("X-API-Key") or self.headers.get("x-api-key")
+        if not client_key and "?" in self.path:
+            from urllib.parse import parse_qs, urlparse
+            query_params = parse_qs(urlparse(self.path).query)
+            client_key = query_params.get("key", [None])[0]
+
+        # Authenticated if: has valid cookie OR valid X-API-Key OR no password set (dev mode)
+        is_authed = has_cookie or (correct_password and client_key == correct_password)
+        if not is_authed and correct_password:
                 origin = self.headers.get("Origin", "")
                 self.send_response(401)
                 self.send_header('Content-Type', 'application/json')
