@@ -18,7 +18,7 @@ import pytz
 from alpaca.data import StockHistoricalDataClient, TimeFrame, TimeFrameUnit
 from alpaca.data.requests import StockBarsRequest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "api"))
 from engines.score_engine import run_score_engine, determine_signal_grade
 from engines.risk_manager import calculate_position_size, check_risk_rules  # risk functions available
 

@@ -33,6 +33,10 @@ try:
 except ImportError:
     HAS_MCAL = False
 
+# engines/ was moved to api/engines/ — make it importable when this script
+# runs from the project root (e.g. via the daily_bot.yml GitHub Action).
+sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(__file__)), "api"))
+
 from engines.score_engine import run_score_engine
 from engines.risk_manager import calculate_position_size
 

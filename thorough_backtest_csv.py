@@ -16,7 +16,7 @@ import numpy as np
 from tqdm import tqdm
 import pytz
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "api"))
 from engines.score_engine import run_score_engine
 from engines.regime import calculate_regime_score
 from engines.correlation import calculate_correlation_score
