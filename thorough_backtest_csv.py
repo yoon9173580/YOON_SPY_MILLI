@@ -127,9 +127,6 @@ def run_thorough_csv_backtest(csv_path: str, start_str: str = "2024-05-01", end_
         df_day = pd.DataFrame(day_bars, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"]).set_index("timestamp")
         
         spy_o = float(df_day["Open"].iloc[0])
-        spy_c = float(df_day["Close"].iloc[-1])
-        spy_h = float(df_day["High"].max())
-        spy_l = float(df_day["Low"].min())
         
         # Get VIX
         try:
@@ -137,20 +134,6 @@ def run_thorough_csv_backtest(csv_path: str, start_str: str = "2024-05-01", end_
         except:
             vix_val = 18.0
             
-        # Sector returns approximation with high-market correlation
-        spy_ret = ((spy_c / spy_o) - 1.0) * 100
-        pcts = {
-            "SPY": spy_ret,
-            "QQQ": spy_ret * 1.2 if spy_ret >= 0 else spy_ret * 1.3,
-            "IWM": spy_ret * 0.9,
-            "DIA": spy_ret * 0.8
-        }
-        
-        # Approximate technical metrics
-        vwap = (df_day["High"] * df_day["Volume"]).sum() / df_day["Volume"].sum() if df_day["Volume"].sum() > 0 else spy_c
-        range_value = spy_h - spy_l
-        vol_ratio = 1.6 # Good volume ratio for momentum
-        
         # Run Score Engine at 10:30 AM
         entry_time = dtime(10, 30)
         entry_bar = None
@@ -164,10 +147,26 @@ def run_thorough_csv_backtest(csv_path: str, start_str: str = "2024-05-01", end_
             
         ts_entry, spy_entry_o, _, _, _, _ = entry_bar
         
+        # Slice morning bars up to 10:30 AM
+        df_morning = df_day[df_day.index.time <= entry_time].copy()
+        df_morning.columns = [col.capitalize() for col in df_morning.columns] # capitalize for engines
+
+        # Sector returns approximation strictly based on morning return
+        spy_morning_ret = ((spy_entry_o / spy_o) - 1.0) * 100
+        pcts = {
+            "SPY": spy_morning_ret,
+            "QQQ": spy_morning_ret * 1.2 if spy_morning_ret >= 0 else spy_morning_ret * 1.3,
+            "IWM": spy_morning_ret * 0.9,
+            "DIA": spy_morning_ret * 0.8
+        }
+        
+        # Calculate morning technical metrics strictly up to 10:30 AM
+        vwap_morning = (df_morning["High"] * df_morning["Volume"]).sum() / df_morning["Volume"].sum() if df_morning["Volume"].sum() > 0 else spy_entry_o
+        range_morning = float(df_morning["High"].max() - df_morning["Low"].min())
+        vol_ratio = 1.6 # Good volume ratio for momentum
+        
         # Check scores using 10:30 AM NY time context
         try:
-            df_morning = df_day[df_day.index.time <= entry_time].copy()
-            df_morning.columns = [col.capitalize() for col in df_morning.columns] # capitalize for engines
             regime = calculate_regime_score(
                 vix_price=vix_val,
                 vix3m_price=vix_val * 1.08, # VIX3M is higher than VIX during Contango
@@ -177,7 +176,7 @@ def run_thorough_csv_backtest(csv_path: str, start_str: str = "2024-05-01", end_
             )
             corr = calculate_correlation_score(pcts)
             time_win = calculate_time_score(ts_entry)
-            tech = calculate_technical_score(spy_entry_o, vwap, vol_ratio, range_value, df_morning)
+            tech = calculate_technical_score(spy_entry_o, vwap_morning, vol_ratio, range_morning, df_morning)
             
             active_scores = [regime["score"], corr["score"], time_win["score"], tech["score"]]
             total_score = sum(active_scores)
@@ -231,7 +230,7 @@ def run_thorough_csv_backtest(csv_path: str, start_str: str = "2024-05-01", end_
         short_entry = bs_price(spy_entry_o, K_sell, T_entry, r_rate, iv, opt)
         
         # Add bid-ask friction + dynamic slippage
-        spy_range_pct = (range_value / spy_o) * 100 if spy_o > 0 else 0
+        spy_range_pct = (range_morning / spy_o) * 100 if spy_o > 0 else 0
         slip = dynamic_slippage(vix_val, spy_range_pct)
         net_debit = (long_entry - short_entry) * (1 + SPREAD_PCT) + slip * 2
         
