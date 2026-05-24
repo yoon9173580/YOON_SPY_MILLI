@@ -1638,12 +1638,14 @@ async function loadData() {
   startDataPolling();
 }
 
-// === Strict per-page-open login (new tab / new window / after close) ===
-// Proactively clear any stale server cookie on fresh open.
-// loadData() itself will then force the Google modal because of missing local flag.
-if (!sessionStorage.getItem('hannae_auth_ok')) {
-  fetch('/api/logout', { method: 'POST', credentials: 'include', keepalive: true }).catch(() => {});
-}
+// === Force re-auth on EVERY page load / refresh (F5, Ctrl+R, etc.) ===
+// We deliberately remove the per-tab auth flag at the very start of every page execution.
+// This makes refresh behave exactly like opening a brand new page.
+sessionStorage.removeItem('hannae_auth_ok');
+
+// Proactively clear the server-side cookie on fresh load/refresh
+// so that the subsequent loadData() will see no valid session.
+fetch('/api/logout', { method: 'POST', credentials: 'include', keepalive: true }).catch(() => {});
 
 loadData();
 </script>
