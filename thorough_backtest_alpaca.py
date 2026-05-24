@@ -56,13 +56,15 @@ def get_trading_days(start: datetime, end: datetime) -> List[datetime]:
     return days
 
 
-def fetch_5min_bars(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+def fetch_bars(symbol: str, start: datetime, end: datetime, timeframe: TimeFrame = TimeFrame(5, TimeFrameUnit.Minute)) -> pd.DataFrame:
     """
-    Fetch 5-minute bars using Alpaca Historical with monthly caching for speed.
+    Fetch bars using Alpaca Historical with monthly caching.
+    Supports any timeframe (1Min, 5Min, 15Min, 1Hour, 1Day, etc.).
     """
     cache_dir = "backtest_cache"
     os.makedirs(cache_dir, exist_ok=True)
 
+    tf_str = f"{timeframe.amount}{timeframe.unit.value}"  # e.g. "5Minute", "1Minute"
     all_dfs = []
     current = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -71,15 +73,15 @@ def fetch_5min_bars(symbol: str, start: datetime, end: datetime) -> pd.DataFrame
         if month_end > end:
             month_end = end
 
-        cache_file = os.path.join(cache_dir, f"{symbol}_{current.strftime('%Y-%m')}.parquet")
+        cache_file = os.path.join(cache_dir, f"{symbol}_{tf_str}_{current.strftime('%Y-%m')}.parquet")
 
         if os.path.exists(cache_file):
             df_month = pd.read_parquet(cache_file)
         else:
-            print(f"  Downloading {symbol} 5min for {current.strftime('%Y-%m')} ...")
+            print(f"  Downloading {symbol} {tf_str} for {current.strftime('%Y-%m')} ...")
             request = StockBarsRequest(
                 symbol_or_symbols=symbol,
-                timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+                timeframe=timeframe,
                 start=current,
                 end=month_end,
                 limit=10000,
@@ -108,9 +110,8 @@ def fetch_5min_bars(symbol: str, start: datetime, end: datetime) -> pd.DataFrame
     df = df[df["symbol"] == symbol].copy()
     df = df.set_index("timestamp").sort_index()
 
-    # Clean columns
     df = df[["open", "high", "low", "close", "volume"]].rename(columns=str.capitalize)
-    return df[df.index >= start]  # trim to requested range
+    return df[df.index >= start]
 
 
 def prepare_daily_context(df_5min: pd.DataFrame, date: datetime) -> Dict:
@@ -184,7 +185,7 @@ def run_full_thorough_backtest(start_date: datetime, end_date: datetime, initial
         day_end = datetime.combine(date, time(16, 0)).replace(tzinfo=NY)
 
         try:
-            bars = fetch_5min_bars("SPY", day_start - timedelta(days=3), day_end)  # a bit of history
+            bars = fetch_bars("SPY", day_start - timedelta(days=3), day_end, TimeFrame(5, TimeFrameUnit.Minute))  # change to TimeFrame(1, TimeFrameUnit.Minute) for 1min
             if bars.empty or len(bars) < 50:
                 continue
 
