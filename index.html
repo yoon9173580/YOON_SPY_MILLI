@@ -852,7 +852,7 @@ function render(py) {
     document.getElementById('strikeContractSub').innerHTML =
       `<span style="color:${dirColor};font-weight:700">${esDir}</span> &bull; ` +
       `Center: <span class="mono" style="font-weight:700">${(of2.center_price||0).toFixed(2)}</span> &bull; ` +
-      `CVD: <span class="mono" style="color:${(of2.cvd||0)>0?'var(--go)':'var(--stop)';font-weight:700">${(of2.cvd_pct||0)>0?'+':''}${of2.cvd_pct||0}%</span>`;
+      `CVD: <span class="mono" style="color:${(of2.cvd||0)>0?'var(--go)':'var(--stop)'};font-weight:700">${(of2.cvd_pct||0)>0?'+':''}${of2.cvd_pct||0}%</span>`;
 
     document.getElementById('strikeTable').innerHTML = '';
 
