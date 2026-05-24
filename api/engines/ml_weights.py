@@ -2,7 +2,9 @@ import os
 import json
 import time
 
-CACHE_FILE = os.path.join("data_cache", "ml_weights.json")
+# Vercel's project filesystem is read-only — only /tmp is writable at runtime.
+_CACHE_DIR = "/tmp" if os.getenv("VERCEL") else "data_cache"
+CACHE_FILE = os.path.join(_CACHE_DIR, "ml_weights.json")
 
 class AdaptiveWeightEngine:
     def __init__(self):

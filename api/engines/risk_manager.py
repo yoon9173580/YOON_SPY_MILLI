@@ -19,24 +19,34 @@ AUTO_TAKE_PROFIT_PCT  = 100.0  # First take-profit at +100% premium
 
 
 def _count_today_trades(portfolio: dict) -> int:
-    """Count trades executed today."""
+    """Count entries executed today using the ledger-style trade_log (OPEN events)."""
     today = datetime.now(NY).strftime("%Y-%m-%d")
-    history = portfolio.get("history", [])
-    return sum(
-        1 for h in history
-        if (h.get("date") == today or h.get("time", "").startswith(today))
-        and h.get("action") == "BUY"
-    )
+    log = portfolio.get("trade_log") or []
+    count = sum(1 for e in log if e.get("event") == "OPEN" and e.get("date") == today)
+    if count:
+        return count
+    # Fallback: scan history for today's entries (covers older records lacking trade_log)
+    history = portfolio.get("history") or []
+    return sum(1 for h in history if h.get("date") == today)
 
 
 def _count_consecutive_losses(portfolio: dict) -> int:
-    """Count consecutive losses from most recent trades."""
-    history = portfolio.get("history", [])
-    sell_trades = [h for h in history if h.get("action") == "SELL"]
+    """Count consecutive losses from the most recent closed trades.
+
+    history is maintained newest-first via insert(0, …) in api/data.py.
+    Closed records carry pnl_locked=True or status="CLOSED".
+    """
+    history = portfolio.get("history") or []
+    closed = [
+        h for h in history
+        if h.get("pnl_locked") or h.get("status") == "CLOSED" or h.get("pnl") is not None
+    ]
 
     consecutive = 0
-    for trade in sell_trades:  # history is newest-first (insert(0, ...))
-        pnl = trade.get("pnl", trade.get("revenue", 0) - trade.get("cost", 0))
+    for trade in closed:
+        pnl = trade.get("pnl")
+        if pnl is None:
+            continue
         if pnl < 0:
             consecutive += 1
         else:
@@ -46,7 +56,7 @@ def _count_consecutive_losses(portfolio: dict) -> int:
 
 def _calculate_daily_drawdown(portfolio: dict) -> float:
     """Calculate today's drawdown as percentage of initial balance."""
-    initial = portfolio.get("initial_balance", 2000.0)
+    initial = portfolio.get("initial_balance", 10000.0)
     current = portfolio.get("current_value", initial)
     if initial <= 0:
         return 0.0
@@ -73,7 +83,7 @@ def calculate_position_size(portfolio: dict, signal_grade: str, entry_price: flo
         sizing_reason   : str
     """
     cash = portfolio.get("cash", 0)
-    initial = portfolio.get("initial_balance", 2000.0)
+    initial = portfolio.get("initial_balance", 10000.0)
     
     # 1.5% risk rule (from Alpaca optimized backtest)
     RISK_PCT = 0.015

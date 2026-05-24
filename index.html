@@ -789,12 +789,14 @@ function render(py) {
   badge.style.borderColor = color;
   badge.style.background = colorToRgba(color, 0.1) || 'rgba(255,255,255,0.05)';
 
-  // Direction Bias (map CALL->LONG, PUT->SHORT for futures display)
+  // Direction Bias (LONG / SHORT / NEUTRAL; legacy CALL/PUT mapped for back-compat)
   const rawDir = py.direction_bias || 'NEUTRAL';
   const dirDisplay = rawDir === 'CALL' ? 'LONG' : rawDir === 'PUT' ? 'SHORT' : rawDir;
+  const isLong = rawDir === 'LONG' || rawDir === 'CALL';
+  const isShort = rawDir === 'SHORT' || rawDir === 'PUT';
   const dirEl = document.getElementById('dirIndicator');
   dirEl.textContent = dirDisplay;
-  dirEl.style.color = rawDir === 'CALL' ? 'var(--go)' : rawDir === 'PUT' ? 'var(--stop)' : 'var(--muted)';
+  dirEl.style.color = isLong ? 'var(--go)' : isShort ? 'var(--stop)' : 'var(--muted)';
   document.getElementById('dirDetail').textContent = sig.action || py.reason || '--';
 
   // Regime Badge
@@ -846,8 +848,11 @@ function render(py) {
     srcEl.textContent = 'SIMULATED DOM';
     srcEl.className = 'strike-source source-est';
     
-    const esDir = py.direction_bias === 'CALL' ? 'LONG' : 'SHORT';
-    const dirColor = py.direction_bias === 'CALL' ? 'var(--go)' : 'var(--stop)';
+    const dbias = py.direction_bias;
+    const esDir = (dbias === 'LONG' || dbias === 'CALL') ? 'LONG'
+                : (dbias === 'SHORT' || dbias === 'PUT') ? 'SHORT'
+                : 'NEUTRAL';
+    const dirColor = esDir === 'LONG' ? 'var(--go)' : esDir === 'SHORT' ? 'var(--stop)' : 'var(--muted)';
     document.getElementById('strikeContractName').textContent = `MES ${esDir} — $5/pt`;
     document.getElementById('strikeContractSub').innerHTML =
       `<span style="color:${dirColor};font-weight:700">${esDir}</span> &bull; ` +
@@ -942,7 +947,10 @@ function render(py) {
     document.getElementById('domTotalAsks').textContent = of.total_asks;
     const biasEl = document.getElementById('domBias');
     biasEl.textContent = of.bias || 'NEUTRAL';
-    biasEl.style.color = of.bias === 'CALL' ? 'var(--go)' : (of.bias === 'PUT' ? 'var(--stop)' : 'var(--muted)');
+    const ofBias = of.bias;
+    biasEl.style.color = (ofBias === 'LONG' || ofBias === 'CALL') ? 'var(--go)'
+                       : (ofBias === 'SHORT' || ofBias === 'PUT') ? 'var(--stop)'
+                       : 'var(--muted)';
   } else {
     ocWidget.style.display = 'none';
   }
@@ -1021,7 +1029,10 @@ function render(py) {
       document.getElementById('ptPositions').innerHTML = pos.map(p => {
         const upnl = p.unrealized_pnl || 0;
         const pnlColor = upnl >= 0 ? 'var(--go)' : 'var(--stop)';
-        const esDir = p.es_direction || (p.direction === 'CALL' ? 'LONG' : 'SHORT');
+        const esDir = p.es_direction
+                    || (p.direction === 'LONG' || p.direction === 'CALL' ? 'LONG'
+                        : p.direction === 'SHORT' || p.direction === 'PUT' ? 'SHORT'
+                        : 'LONG');
         const entryP = p.entry_price || 0;
         const currentP = p.current_price || entryP;
         const ptPnl = p.point_pnl || 0;

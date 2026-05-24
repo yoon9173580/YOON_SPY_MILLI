@@ -77,6 +77,12 @@ ALPACA_HEADERS = {
     "APCA-API-KEY-ID": os.getenv("APCA_API_KEY_ID", ""),
     "APCA-API-SECRET-KEY": os.getenv("APCA_API_SECRET_KEY", ""),
 }
+
+# Stock symbol universe — module-level so trading_bot.py and other consumers can import
+STOCK_SYMS = ["SPY", "QQQ", "DIA", "IWM"]
+MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+GME_STOCK = ["GME"]
+ALL_STOCKS = STOCK_SYMS + MAG7 + GME_STOCK
 FLASHALPHA_API_KEY = os.getenv("FLASHALPHA_API_KEY", "")
 FLASHALPHA_API_URL = "https://lab.flashalpha.com/v1"
 _VIX_CACHE = {"at": 0.0, "vix": 18.0, "vix3m": None}
@@ -368,15 +374,19 @@ def _calculate_es_order_flow(spy_price, vix_price, normalized_score, direction_b
     else:
         base_size = 200
     
+    # Seed by minute so the simulated DOM stays stable within a polling window
+    # instead of jittering on every request.
+    rng = random.Random(int(time.time() // 60))
+
     levels = []
     for i in range(-5, 6):
         price = round(center + i * 0.25, 2)
         # Distance from center affects depth (closer = thicker)
         dist = abs(i)
         depth_factor = max(0.3, 1.0 - dist * 0.12)
-        
-        bid_size = max(5, int(base_size * depth_factor * (0.7 + random.random() * 0.6)))
-        ask_size = max(5, int(base_size * depth_factor * (0.7 + random.random() * 0.6)))
+
+        bid_size = max(5, int(base_size * depth_factor * (0.7 + rng.random() * 0.6)))
+        ask_size = max(5, int(base_size * depth_factor * (0.7 + rng.random() * 0.6)))
         
         # Bias: stronger signal shifts liquidity
         if direction_bias == "LONG":  # Bullish
@@ -896,7 +906,9 @@ def _position_invalid_reason(open_pos, grade, direction_bias, score_result):
         return "DIRECTION"
     if grade in ("NONE", "WEAK"):
         return "SIGNAL"
-    if layers.get("time_window", {}).get("score", 0) < 10:
+    # Entry requires score >= 20 (PRIME). Exit only on score < 5 so we don't
+    # force-close as soon as PRIME → TRANSITION (score 8) — that killed winners.
+    if layers.get("time_window", {}).get("score", 0) < 5:
         return "TIME_WINDOW"
     return None
 
@@ -1141,11 +1153,8 @@ class handler(BaseHTTPRequestHandler):
 
             authorized = False
 
-            # Google Credential Auth ONLY
-            if credential == "debug123":
-                authorized = True
-                print("[Debug Auth] Authorized via debug backdoor")
-            elif credential:
+            # Google Credential Auth ONLY (debug backdoor removed)
+            if credential:
                 google_payload = _verify_google_token(credential)
                 if google_payload:
                     email = google_payload.get("email")
@@ -1252,11 +1261,6 @@ class handler(BaseHTTPRequestHandler):
         now = datetime.now(NY)
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
 
-        STOCK_SYMS = ["SPY", "QQQ", "DIA", "IWM"]
-        MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
-        GME_STOCK = ["GME"]
-        ALL_STOCKS = STOCK_SYMS + MAG7 + GME_STOCK
-
         try:
             bundle = _fetch_market_bundle(ALL_STOCKS)
             snaps = bundle["snaps"] or {}
@@ -1328,18 +1332,22 @@ class handler(BaseHTTPRequestHandler):
             grade = signal["grade"]
 
             # Daily drawdown tracking (for halt logic + response)
+            # score_engine already produced a complete signal (including LOCKED for risk/veto).
+            # Only override with halt signal if daily loss limit hit AND we aren't already locked.
             initial_bal  = float(portfolio.get("initial_balance", STARTING_BALANCE) or STARTING_BALANCE)
             current_val  = float(portfolio.get("current_value", initial_bal) or initial_bal)
             daily_dd_pct = round((initial_bal - current_val) / initial_bal * 100, 2) if initial_bal > 0 else 0.0
-            if daily_dd_pct >= DAILY_LOSS_LIMIT * 100:
-                signal["action"] = f"⛔ DAILY LOSS LIMIT ({daily_dd_pct:.1f}%) — TRADING HALTED"
-                signal["halted"] = True
-            if grade == "STRONG": signal = {"grade": "STRONG", "label": "STRONG SIGNAL", "emoji": "🟢", "action": "Full position", "color": "#3dd68c"}
-            elif grade == "MODERATE": signal = {"grade": "MODERATE", "label": "MODERATE SIGNAL", "emoji": "🟡", "action": "Half position", "color": "#f5c451"}
-            elif grade == "WEAK": signal = {"grade": "WEAK", "label": "STANDBY", "emoji": "🟠", "action": "Monitor only", "color": "#f5a623"}
-            else: signal = {"grade": "NONE", "label": "NO SIGNAL", "emoji": "🔴", "action": "No entry", "color": "#f07178"}
+            if daily_dd_pct >= DAILY_LOSS_LIMIT * 100 and grade != "LOCKED":
+                signal = {
+                    "grade": "LOCKED",
+                    "label": "DAILY LIMIT HALT",
+                    "emoji": "⛔",
+                    "action": f"Daily loss {daily_dd_pct:.1f}% — Trading halted",
+                    "color": "#f07178",
+                    "halted": True,
+                }
+                grade = "LOCKED"
 
-            # t_min/is_regular already computed above (L802-803)
             if not is_regular:
                 signal["label"] = "MARKET CLOSED"
                 signal["action"] = "Market not in session"
@@ -1583,7 +1591,7 @@ class handler(BaseHTTPRequestHandler):
                 normalized_score=normalized, direction_bias=direction_bias,
             )
 
-            # Day counters (Day 1 = 2026-05-22)
+            # Day counters (Day 1 = TRADING_START_DATE, currently 2026-05-25)
             start_dt = datetime.strptime(TRADING_START_DATE, "%Y-%m-%d").date()
             today_dt = now.date()
             calendar_day = max(1, (today_dt - start_dt).days + 1)
