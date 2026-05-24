@@ -340,5 +340,11 @@ def run_backtest(days=30, balance=2000.0):
     return results
 
 if __name__ == "__main__":
-    days = int(sys.argv[1]) if len(sys.argv) > 1 else 30
-    run_backtest(days=days)
+    import sys
+    if len(sys.argv) >= 3:
+        # Date range for maximum backtest period
+        # Example: python backtest.py 2024-01-02 2025-01-02
+        run_backtest(start_date=sys.argv[1], end_date=sys.argv[2])
+    else:
+        days = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+        run_backtest(days=days)
