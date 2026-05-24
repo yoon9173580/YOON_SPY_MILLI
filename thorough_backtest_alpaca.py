@@ -150,7 +150,7 @@ def prepare_daily_context(df_5min: pd.DataFrame, date: datetime) -> Dict:
     return {
         "spy_price": spy_price,
         "vix_price": vix_price,
-        "vix3m_price": vix_price * 0.95,  # rough
+        "vix3m_price": vix_price * 1.08,  # rough
         "prev_close": prev_close,
         "vwap": vwap,
         "vol_ratio": vol_ratio,

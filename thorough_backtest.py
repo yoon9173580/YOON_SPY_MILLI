@@ -94,9 +94,20 @@ def run_thorough_backtest(start_date="2022-05-01", end_date=None, initial_balanc
         hist.columns = ["High", "Low", "Close", "Volume"]
 
         try:
-            regime = calculate_regime_score(vix_price, hist)
+            regime = calculate_regime_score(
+                vix_price=vix_price,
+                vix3m_price=vix_price * 1.08,
+                spy_price=spy_price,
+                prev_close=float(row["PrevClose"]),
+                spy_history=hist
+            )
             corr = calculate_correlation_score(pcts)
-            time_win = calculate_time_score(date, session="REGULAR")
+            
+            # Combine the date with 10:30 AM (PRIME trading hours) to get correct time scoring
+            from datetime import time as dtime
+            test_time = datetime.combine(date.date(), dtime(10, 30)).replace(tzinfo=NY)
+            time_win = calculate_time_score(test_time)
+            
             tech = calculate_technical_score(spy_price, vwap, vol_ratio, range_value, hist)
             risk = {"passed": True, "reason": "Daily backtest"}
 
