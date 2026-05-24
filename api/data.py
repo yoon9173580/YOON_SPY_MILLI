@@ -14,7 +14,11 @@ import pandas as pd
 import numpy as np
 
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+try:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+except NameError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "..")))
+    sys.path.insert(0, os.getcwd())
 from engines.score_engine import run_score_engine
 STARTING_BALANCE = 10000.0
 TRADING_START_DATE = "2026-05-25"   # Day 1 of MES futures paper trading
@@ -1688,3 +1692,4 @@ class handler(BaseHTTPRequestHandler):
                 "message": str(e) if not is_prod else "An error occurred on the server."
             }
             self.wfile.write(json.dumps(err_resp).encode('utf-8'))
+
