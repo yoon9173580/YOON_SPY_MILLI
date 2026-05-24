@@ -1038,11 +1038,18 @@ class handler(BaseHTTPRequestHandler):
             payload = json.loads(post_data) if post_data else {}
             
             credential = payload.get("credential")
-            
+            password   = payload.get("password") or payload.get("key")
+
             authorized = False
-            
-            # Google Credential Auth ONLY (replaced legacy unlock key/password)
-            if credential:
+
+            # 1) Password fallback (UNLOCK_PASSWORD env var)
+            correct_pw = os.getenv("UNLOCK_PASSWORD") or os.getenv("APP_SECRET_KEY", "")
+            if password and correct_pw and password == correct_pw:
+                authorized = True
+                print("[Password Auth Success]")
+
+            # 2) Google Credential Auth
+            if not authorized and credential:
                 google_payload = _verify_google_token(credential)
                 if google_payload:
                     email = google_payload.get("email")
