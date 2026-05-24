@@ -55,12 +55,19 @@ def _count_consecutive_losses(portfolio: dict) -> int:
 
 
 def _calculate_daily_drawdown(portfolio: dict) -> float:
-    """Calculate today's drawdown as percentage of initial balance."""
-    initial = portfolio.get("initial_balance", 10000.0)
-    current = portfolio.get("current_value", initial)
-    if initial <= 0:
+    """Calculate today's drawdown as percentage of day-open equity.
+
+    Anchor is daily_start_value (refreshed once per trading day by
+    api/data.py); falls back to initial_balance if the anchor isn't
+    set yet (first call ever on a new portfolio).
+    """
+    anchor = (portfolio.get("daily_start_value")
+              or portfolio.get("initial_balance", 10000.0)
+              or 10000.0)
+    current = portfolio.get("current_value", anchor)
+    if anchor <= 0:
         return 0.0
-    return max(0.0, ((initial - current) / initial) * 100)
+    return max(0.0, ((anchor - current) / anchor) * 100)
 
 
 def _calculate_weekly_pnl(portfolio: dict) -> float:

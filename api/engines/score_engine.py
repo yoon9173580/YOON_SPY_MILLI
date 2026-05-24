@@ -156,10 +156,16 @@ def run_score_engine(now_et: datetime,
 
     # ── TOTAL SCORE CALCULATION ─────────────────────────────────
     # ── APPLY ML ADAPTIVE WEIGHTS ───────────────────────────────
+    # ML multipliers range 0.5~1.5. Only apply to positive scores so a
+    # poor regime doesn't get amplified into a deeper negative, and cap
+    # the result at the layer's nominal max so total never exceeds the
+    # denominator used for normalization.
     ml = get_ml_multipliers()
-    layers["regime"]["score"] = int(layers["regime"]["score"] * ml.get("regime", 1.0))
-    layers["correlation"]["score"] = int(layers["correlation"]["score"] * ml.get("correlation", 1.0))
-    layers["technical"]["score"] = int(layers["technical"]["score"] * ml.get("technical", 1.0))
+    for layer_key in ("regime", "correlation", "technical"):
+        s = layers[layer_key]["score"]
+        m = layers[layer_key]["max"]
+        if s > 0:
+            layers[layer_key]["score"] = min(m, int(s * ml.get(layer_key, 1.0)))
 
     # Sum layers 2 + 4 + 5 + 6 (Layer 1 = gate, Layer 3 = future, Layer 7 = lockout)
     active_scores = [
@@ -185,29 +191,48 @@ def run_score_engine(now_et: datetime,
     # ── SIGNAL GRADE ────────────────────────────────────────────
     signal = determine_signal_grade(normalized)
 
+    # ── REGIME-AWARE STRATEGY FLAG ──────────────────────────────
+    # Trending regime (low VIX): follow momentum signals.
+    # Counter-trend regime (high VIX): trade RSI/band extremes only.
+    is_trending = vix_price is not None and vix_price < 22.0
+
     # ── RUNAWAY TREND VETO FILTER ───────────────────────────────
+    # RSI extremes are the *entry signal* in counter-trend mode, so the
+    # RSI veto only applies when trending. ADX/sector vetoes still apply
+    # — fading a fully-established 35+ ADX move is dangerous either way.
     is_runaway_trend = False
     runaway_reason = ""
 
-    # 1. ADX Runaway check
+    # 1. ADX Runaway check (both modes)
     adx_val = layers["regime"].get("details", {}).get("adx", {}).get("value")
     if adx_val is not None and adx_val >= 35.0:
         is_runaway_trend = True
         runaway_reason = f"Extreme ADX ({adx_val:.1f} >= 35.0)"
 
-    # 2. RSI Runaway check
+    # 2. RSI Runaway check — trending mode only
     rsi_val = layers["technical"].get("rsi")
-    if rsi_val is not None and (rsi_val >= 80.0 or rsi_val <= 20.0):
+    if is_trending and rsi_val is not None and (rsi_val >= 80.0 or rsi_val <= 20.0):
         is_runaway_trend = True
         runaway_reason = f"Extreme RSI ({rsi_val:.1f})"
 
-    # 3. Synchronized Sector Breakout check
+    # 3. Synchronized Sector Breakout — VIX-adaptive threshold
     spy_ret = pcts.get("SPY", 0.0)
     qqq_ret = pcts.get("QQQ", 0.0)
     iwm_ret = pcts.get("IWM", 0.0)
-    if (spy_ret > 1.2 and qqq_ret > 1.2 and iwm_ret > 1.2) or (spy_ret < -1.2 and qqq_ret < -1.2 and iwm_ret < -1.2):
+    vix_ref = vix_price if vix_price and vix_price > 0 else 18.0
+    if vix_ref < 15:
+        sector_thresh = 0.8
+    elif vix_ref < 22:
+        sector_thresh = 1.2
+    elif vix_ref < 30:
+        sector_thresh = 1.8
+    else:
+        sector_thresh = 2.5
+    if ((spy_ret > sector_thresh and qqq_ret > sector_thresh and iwm_ret > sector_thresh)
+        or (spy_ret < -sector_thresh and qqq_ret < -sector_thresh and iwm_ret < -sector_thresh)):
         is_runaway_trend = True
-        runaway_reason = f"Synchronized Sector Breakout (SPY:{spy_ret:+.2f}%, QQQ:{qqq_ret:+.2f}%)"
+        runaway_reason = (f"Synchronized Sector Breakout ({sector_thresh:.1f}% threshold) "
+                          f"SPY:{spy_ret:+.2f}%, QQQ:{qqq_ret:+.2f}%, IWM:{iwm_ret:+.2f}%")
 
     # Apply Veto
     if is_runaway_trend:
@@ -237,24 +262,27 @@ def run_score_engine(now_et: datetime,
         signal["label"] = f"MARKET {session_name}"
         signal["action"] = "Market not in session"
 
-    # ── DIRECTION BIAS (Adaptive Regime Strategy Switching Applied) ──────────
+    # ── DIRECTION BIAS (Regime-Aware Strategy Switching) ────────
     raw_bias = layers["technical"].get("direction_bias", "NEUTRAL")
-    
-    # Extract ADX and VIX values
-    adx_val = layers["regime"].get("details", {}).get("adx", {}).get("value")
-    
-    # Dynamic strategy switching criteria (must match thorough_backtest_csv.py)
-    is_trending = (vix_price < 22.0)
-    
+
     if is_trending:
-        # Standard: Follow the technical direction bias (Trend Following)
+        # Trend following: take the technical layer's vote directly.
         direction_bias = raw_bias
     else:
-        # Inverted: Fade the direction bias (Counter-Trend / Mean Reversion)
-        if raw_bias == "LONG":
-            direction_bias = "SHORT"
-        elif raw_bias == "SHORT":
-            direction_bias = "LONG"
+        # Mean reversion: ignore momentum (raw_bias) and require an actual
+        # extreme — naive inversion of trend signals has no statistical edge.
+        # Bias only when RSI is far from neutral OR price is outside the
+        # VWAP 2-SD band (over-extension fade).
+        rsi_val_mr = layers["technical"].get("rsi")
+        band_region = layers["technical"].get("details", {}).get("vwap_bands", {}).get("region", "NEUTRAL")
+        if rsi_val_mr is not None and rsi_val_mr <= 35:
+            direction_bias = "LONG"   # oversold bounce
+        elif rsi_val_mr is not None and rsi_val_mr >= 65:
+            direction_bias = "SHORT"  # overbought fade
+        elif band_region == "LONG_FADE":
+            direction_bias = "LONG"   # below 2SD — mean revert up
+        elif band_region == "SHORT_FADE":
+            direction_bias = "SHORT"  # above 2SD — mean revert down
         else:
             direction_bias = "NEUTRAL"
 

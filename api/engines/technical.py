@@ -30,30 +30,48 @@ def _score_vwap_bands(spy_price: float, vwap: float, spy_history: pd.DataFrame) 
     """
     VWAP ± 1SD, ± 2SD band analysis.
     Overextension beyond 2SD → fading opportunity.
+
+    Uses volume-weighted deviation of each bar's typical price from the
+    cumulative session VWAP at that bar — not the current VWAP applied
+    across the whole series (the previous approximation under-weighted
+    early-session deviation).
     """
-    if spy_history is None or spy_history.empty or vwap is None or spy_price is None:
-        return 0, "Band data unavailable"
+    if (spy_history is None or spy_history.empty or vwap is None
+            or vwap <= 0 or spy_price is None):
+        return 0, "Band data unavailable", "NEUTRAL"
 
     try:
         tp = (spy_history["High"] + spy_history["Low"] + spy_history["Close"]) / 3.0
-        deviation = ((tp - vwap) ** 2).mean() ** 0.5
+        vol = spy_history["Volume"].astype(float)
+        total_vol = float(vol.sum())
+        if total_vol <= 0:
+            return 0, "Band data unavailable (no volume)", "NEUTRAL"
+
+        cum_vol = vol.cumsum().replace(0, pd.NA)
+        rolling_vwap = (tp * vol).cumsum() / cum_vol
+        dev_sq = (tp - rolling_vwap) ** 2
+        weighted_var = (dev_sq * vol).sum() / total_vol
+        deviation = float(weighted_var ** 0.5)
+        if deviation <= 0:
+            return 0, "Band data degenerate", "NEUTRAL"
+
         upper_1sd = vwap + deviation
         lower_1sd = vwap - deviation
         upper_2sd = vwap + 2 * deviation
         lower_2sd = vwap - 2 * deviation
 
         if spy_price > upper_2sd:
-            return -5, f"Over-extended above 2SD — fade risk"
+            return -5, "Over-extended above 2SD — fade risk", "SHORT_FADE"
         elif spy_price < lower_2sd:
-            return -5, f"Over-extended below 2SD — fade risk"
+            return -5, "Over-extended below 2SD — fade risk", "LONG_FADE"
         elif spy_price > upper_1sd:
-            return 5, f"Above 1SD — momentum"
+            return 5, "Above 1SD — momentum", "LONG"
         elif spy_price < lower_1sd:
-            return 5, f"Below 1SD — momentum"
+            return 5, "Below 1SD — momentum", "SHORT"
         else:
-            return 0, f"Within 1SD — neutral zone"
+            return 0, "Within 1SD — neutral zone", "NEUTRAL"
     except Exception:
-        return 0, "Band calculation error"
+        return 0, "Band calculation error", "NEUTRAL"
 
 
 def _score_volume(vol_ratio: float) -> tuple:
@@ -142,16 +160,14 @@ def calculate_technical_score(spy_price: float, vwap: float,
         rsi            : float or None
     """
     details = {}
-    bias_votes = {"LONG": 0, "SHORT": 0, "NEUTRAL": 0}
 
-    # VWAP position
+    # VWAP position (primary signal — weight 2)
     vwap_score, vwap_dir, vwap_detail = _score_vwap_position(spy_price, vwap)
     details["vwap_position"] = {"score": vwap_score, "detail": vwap_detail}
-    bias_votes[vwap_dir] += 1
 
-    # VWAP bands
-    band_score, band_detail = _score_vwap_bands(spy_price, vwap, spy_history)
-    details["vwap_bands"] = {"score": band_score, "detail": band_detail}
+    # VWAP bands (momentum 1SD ±1, over-extension 2SD ignored in trend vote)
+    band_score, band_detail, band_dir = _score_vwap_bands(spy_price, vwap, spy_history)
+    details["vwap_bands"] = {"score": band_score, "detail": band_detail, "region": band_dir}
 
     # Volume
     vol_score, vol_detail = _score_volume(vol_ratio)
@@ -161,19 +177,36 @@ def calculate_technical_score(spy_price: float, vwap: float,
     range_score, range_detail = _score_range(range_value)
     details["range"] = {"score": range_score, "detail": range_detail}
 
-    # RSI Momentum
+    # RSI Momentum (weight 1)
     rsi = _calculate_rsi(spy_history)
     rsi_score, rsi_dir, rsi_detail = _score_momentum(rsi)
     details["momentum"] = {"score": rsi_score, "detail": rsi_detail}
-    bias_votes[rsi_dir] += 1
 
     # Total (cap at 30)
     total = min(30, vwap_score + band_score + vol_score + range_score + rsi_score)
 
-    # Direction bias — majority vote
-    if bias_votes["LONG"] > bias_votes["SHORT"]:
+    # ── Weighted directional vote ────────────────────────────────
+    # Trend signals (vwap pos, RSI, 1SD bands) contribute; 2SD fade signals
+    # are over-extension warnings and are *not* used here — counter-trend
+    # mode uses them separately in the score engine.
+    bias_sum = 0
+    if vwap_dir == "LONG":
+        bias_sum += 2
+    elif vwap_dir == "SHORT":
+        bias_sum -= 2
+    if rsi_dir == "LONG":
+        bias_sum += 1
+    elif rsi_dir == "SHORT":
+        bias_sum -= 1
+    if band_dir == "LONG":   # 1SD momentum
+        bias_sum += 1
+    elif band_dir == "SHORT":
+        bias_sum -= 1
+
+    # Require ≥2 net votes (i.e. VWAP confirmed OR multi-signal agreement)
+    if bias_sum >= 2:
         direction = "LONG"
-    elif bias_votes["SHORT"] > bias_votes["LONG"]:
+    elif bias_sum <= -2:
         direction = "SHORT"
     else:
         direction = "NEUTRAL"

@@ -435,7 +435,21 @@ PORTFOLIO_STORAGE_KEY = os.getenv("PORTFOLIO_STORAGE_KEY", "arungun_portfolio")
 MAX_TRADE_HISTORY = 250
 
 def _default_pf():
-    return {"cash": STARTING_BALANCE, "positions": {}, "history": [], "trade_log": [], "recent_trades": [], "initial_balance": STARTING_BALANCE, "current_value": STARTING_BALANCE, "total_return_pct": 0.0}
+    return {
+        "cash": STARTING_BALANCE,
+        "positions": {},
+        "history": [],
+        "trade_log": [],
+        "recent_trades": [],
+        "initial_balance": STARTING_BALANCE,
+        "current_value": STARTING_BALANCE,
+        "total_return_pct": 0.0,
+        # Daily DD anchor — set to current_value at each session open so the
+        # 6% halt limits a *single day's* loss, not cumulative drawdown from
+        # the original $10k starting balance.
+        "daily_start_value": STARTING_BALANCE,
+        "daily_session_date": None,
+    }
 
 def _normalize_pf(pf):
     base = _default_pf()
@@ -452,7 +466,10 @@ def _normalize_pf(pf):
     base["history"] = base.get("history") or []
     base["trade_log"] = base.get("trade_log") or []
 
-    # Auto-recover: rebuild trade_log from history when trade_log is empty
+    # Auto-recover: rebuild trade_log from history when trade_log is empty.
+    # Each closed history record represents a complete trade lifecycle, so
+    # emit BOTH the OPEN and CLOSE events — emitting only CLOSE produced a
+    # ledger where every trade appeared without an entry.
     if not base["trade_log"] and base["history"]:
         recovered = []
         for h in base["history"]:
@@ -460,29 +477,51 @@ def _normalize_pf(pf):
                 continue
             h = _ensure_trade_id(h)
             is_closed = _is_closed_record(h)
-            evt = {
-                "event": "CLOSE" if is_closed else "OPEN",
+
+            open_evt = {
+                "event": "OPEN",
                 "trade_id": h.get("trade_id"),
                 "date": h.get("date"),
                 "entry_time": h.get("entry_time") or h.get("time"),
-                "exit_time": h.get("exit_time"),
+                "time": h.get("entry_time") or h.get("time"),
                 "direction": h.get("direction"),
                 "es_direction": h.get("es_direction"),
                 "instrument": h.get("instrument", "MES"),
                 "entry_price": h.get("entry_price", h.get("entry_spy")),
-                "exit_price": h.get("exit_price", h.get("exit_spy")),
                 "contracts": h.get("contracts"),
                 "sl_price": h.get("sl_price"),
                 "tp_price": h.get("tp_price"),
                 "margin_locked": h.get("margin_locked"),
-                "exit_type": h.get("exit_type"),
-                "pnl": h.get("pnl"),
-                "realized_pnl": h.get("realized_pnl"),
-                "pnl_pct": h.get("pnl_pct"),
-                "win": h.get("win"),
-                "logged_at": h.get("exit_ts") or h.get("entry_ts"),
+                "grade": h.get("grade"),
+                "score": h.get("score"),
+                "logged_at": h.get("entry_ts") or f"{h.get('date','')} {h.get('entry_time') or h.get('time','')}",
             }
-            recovered.append(evt)
+            recovered.append(open_evt)
+
+            if is_closed:
+                close_evt = {
+                    "event": "CLOSE",
+                    "trade_id": h.get("trade_id"),
+                    "date": h.get("date"),
+                    "entry_time": h.get("entry_time") or h.get("time"),
+                    "exit_time": h.get("exit_time"),
+                    "direction": h.get("direction"),
+                    "es_direction": h.get("es_direction"),
+                    "instrument": h.get("instrument", "MES"),
+                    "entry_price": h.get("entry_price", h.get("entry_spy")),
+                    "exit_price": h.get("exit_price", h.get("exit_spy")),
+                    "contracts": h.get("contracts"),
+                    "sl_price": h.get("sl_price"),
+                    "tp_price": h.get("tp_price"),
+                    "margin_locked": h.get("margin_locked"),
+                    "exit_type": h.get("exit_type"),
+                    "pnl": h.get("pnl"),
+                    "realized_pnl": h.get("realized_pnl"),
+                    "pnl_pct": h.get("pnl_pct"),
+                    "win": h.get("win"),
+                    "logged_at": h.get("exit_ts") or f"{h.get('date','')} {h.get('exit_time','')}",
+                }
+                recovered.append(close_evt)
         if recovered:
             base["trade_log"] = recovered
     base["recent_trades"] = base.get("recent_trades") or _build_recent_trades(base)
@@ -872,11 +911,15 @@ def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now
     if direction_bias not in ("LONG", "SHORT"):
         return False
 
-    # Daily loss limit halt — stop trading if down > 6% today
+    # Daily loss limit halt — stop trading if down > 6% today.
+    # Anchor is the day-open equity (daily_start_value), refreshed once per
+    # session by the caller — not the original initial balance.
     if portfolio:
-        initial = float(portfolio.get("initial_balance", STARTING_BALANCE) or STARTING_BALANCE)
-        current = float(portfolio.get("current_value", initial) or initial)
-        daily_dd = (initial - current) / initial if initial > 0 else 0
+        anchor = float(portfolio.get("daily_start_value")
+                       or portfolio.get("initial_balance", STARTING_BALANCE)
+                       or STARTING_BALANCE)
+        current = float(portfolio.get("current_value", anchor) or anchor)
+        daily_dd = (anchor - current) / anchor if anchor > 0 else 0
         if daily_dd >= DAILY_LOSS_LIMIT:
             return False
 
@@ -1298,9 +1341,14 @@ class handler(BaseHTTPRequestHandler):
                     vwap = float(vwap_s.iloc[-1])
             
             if not spy_h.empty:
+                # Use the trailing 5-bar mean (~25min) instead of the single
+                # last bar — a one-bar spike was inflating the ratio and the
+                # technical layer's volume score on noise.
+                vol_recent = spy_h["Volume"].tail(5).mean()
                 vol_sma = spy_h["Volume"].rolling(window=20).mean()
-                if not vol_sma.empty and pd.notna(vol_sma.iloc[-1]) and vol_sma.iloc[-1] > 0:
-                    vol_r = float(spy_h["Volume"].iloc[-1] / vol_sma.iloc[-1])
+                if (not pd.isna(vol_recent) and not vol_sma.empty
+                        and pd.notna(vol_sma.iloc[-1]) and vol_sma.iloc[-1] > 0):
+                    vol_r = float(vol_recent / vol_sma.iloc[-1])
                 d_range = float(spy_h["High"].max() - spy_h["Low"].min())
 
             # ── CALL SCORE ENGINE (Modular 140-point system) ──
@@ -1334,9 +1382,17 @@ class handler(BaseHTTPRequestHandler):
             # Daily drawdown tracking (for halt logic + response)
             # score_engine already produced a complete signal (including LOCKED for risk/veto).
             # Only override with halt signal if daily loss limit hit AND we aren't already locked.
+            # NOTE: anchor is the day-open equity, refreshed once per trading
+            # day, so the 6% limit governs today's loss — not cumulative
+            # drawdown from the original starting balance.
             initial_bal  = float(portfolio.get("initial_balance", STARTING_BALANCE) or STARTING_BALANCE)
             current_val  = float(portfolio.get("current_value", initial_bal) or initial_bal)
-            daily_dd_pct = round((initial_bal - current_val) / initial_bal * 100, 2) if initial_bal > 0 else 0.0
+            session_date_today = now.strftime("%Y-%m-%d")
+            if portfolio.get("daily_session_date") != session_date_today:
+                portfolio["daily_start_value"] = current_val
+                portfolio["daily_session_date"] = session_date_today
+            daily_anchor = float(portfolio.get("daily_start_value", current_val) or current_val)
+            daily_dd_pct = round((daily_anchor - current_val) / daily_anchor * 100, 2) if daily_anchor > 0 else 0.0
             if daily_dd_pct >= DAILY_LOSS_LIMIT * 100 and grade != "LOCKED":
                 signal = {
                     "grade": "LOCKED",
@@ -1402,7 +1458,18 @@ class handler(BaseHTTPRequestHandler):
                 atr_proxy = max(d_range, 2.0) if d_range > 0 else 4.0
                 sl_points = max(ATR_SL_MULT * atr_proxy, 2.0)
                 sl_points = min(sl_points, 15.0)
-                tp_points = sl_points * 2.0  # 2:1 R/R
+
+                # Regime-aware reward/risk ratio — trending markets get
+                # wider targets; choppy/uncertain regimes take quicker
+                # profits to avoid round-tripping.
+                regime_label = score_result["layers"].get("regime", {}).get("regime", "UNKNOWN")
+                if regime_label in ("TRENDING", "BREAKOUT"):
+                    rr_ratio = 3.0
+                elif regime_label == "CHOPPY":
+                    rr_ratio = 1.5
+                else:
+                    rr_ratio = 2.0
+                tp_points = sl_points * rr_ratio
                 
                 # Position sizing
                 risk_per_contract = sl_points * ES_MULTIPLIER + ES_COMMISSION_RT

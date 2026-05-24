@@ -212,9 +212,11 @@ def main_loop():
                     save_bot_state(state)
 
                 # Entry criteria — match the dashboard's STRONG-only rule.
+                # Trust the grade computed by the score engine (GRADE_STRONG
+                # may be env-overridden) instead of hard-coding a score floor
+                # that could disagree with the dashboard's classification.
                 if (
                     is_regular
-                    and total_score >= 89
                     and signal.get("grade") == "STRONG"
                     and bias in ("LONG", "SHORT")
                 ):
