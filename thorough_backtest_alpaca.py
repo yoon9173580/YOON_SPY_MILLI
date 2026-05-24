@@ -268,22 +268,25 @@ def run_full_thorough_backtest(start_date: datetime, end_date: datetime, initial
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Thorough Alpaca Historical Backtest (Real Engine + 1Min/5Min)")
-    parser.add_argument("--start", type=str, default=None, help="Start date YYYY-MM-DD (default: 6 months ago)")
+    parser = argparse.ArgumentParser(
+        description="Thorough Alpaca Historical Backtest (Real Engine + 1Min/5Min)",
+        epilog="Example: python thorough_backtest_alpaca.py --timeframe 1Min --start 2024-05-01 --end 2025-05-01"
+    )
+    parser.add_argument("--start", type=str, default=None, help="Start date YYYY-MM-DD (default: ~1 year ago)")
     parser.add_argument("--end", type=str, default=None, help="End date YYYY-MM-DD (default: today)")
     parser.add_argument("--timeframe", type=str, default="1Min", choices=["1Min", "5Min", "15Min"], help="Bar timeframe")
     parser.add_argument("--balance", type=float, default=2000.0, help="Initial balance")
 
     args = parser.parse_args()
 
-    # Default to last 6 months if no dates given
     if args.end is None:
         end_dt = datetime.now()
     else:
         end_dt = datetime.strptime(args.end, "%Y-%m-%d")
 
     if args.start is None:
-        start_dt = end_dt - timedelta(days=180)  # ~6 months
+        # Default to 1 year (good balance between data size and usefulness)
+        start_dt = end_dt - timedelta(days=365)
     else:
         start_dt = datetime.strptime(args.start, "%Y-%m-%d")
 
@@ -294,6 +297,10 @@ if __name__ == "__main__":
     }
     tf = tf_map.get(args.timeframe, TimeFrame(1, TimeFrameUnit.Minute))
 
-    print(f"Running thorough backtest: {start_dt.date()} ~ {end_dt.date()} | Timeframe: {args.timeframe}")
+    print(f"\n=== Thorough Backtest ===")
+    print(f"Period    : {start_dt.date()} ~ {end_dt.date()}")
+    print(f"Timeframe : {args.timeframe}")
+    print(f"Balance   : ${args.balance:,.0f}")
+    print(f"========================\n")
 
     run_full_thorough_backtest(start_dt, end_dt, initial_balance=args.balance)
