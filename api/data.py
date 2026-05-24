@@ -1,9 +1,9 @@
 """
 Vercel Serverless API — /api/data
-SPY 0DTE Signal Machine — 7-Layer Score Engine
-Google SSO only (replaced legacy UNLOCK key/password) + Session Cookie (Last Update: 2026-05-23)
+ES Futures Signal Engine — 7-Layer Score Engine
+Google SSO only + Session Cookie (Last Update: 2026-05-25)
 """
-import math, json, os, time, traceback
+import math, json, os, time, traceback, random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler
 from datetime import datetime, timedelta
@@ -16,37 +16,18 @@ import numpy as np
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from engines.score_engine import run_score_engine
-STARTING_BALANCE = 500.0
-TRADING_START_DATE = "2026-05-22"   # Day 1 of paper trading
-PDT_THRESHOLD = 2000.0      # accounts below this are subject to PDT
-PDT_MAX_DAY_TRADES = 3      # max day trades per rolling 5 business days
-PDT_WINDOW_DAYS = 5         # rolling business-day window
+STARTING_BALANCE = 10000.0
+TRADING_START_DATE = "2026-05-25"   # Day 1 of ES futures paper trading
 
-def norm_cdf(x):
-    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+# ES Futures Contract Specs
+ES_MULTIPLIER = 50.0       # $50 per point of S&P 500
+ES_COMMISSION_RT = 2.50    # Round-trip commission per contract
+ES_SLIPPAGE_PTS = 0.25     # 1 tick slippage per side
+ES_DAY_MARGIN = 500.0      # Day-trading margin per contract
+ATR_SL_MULT = 1.5          # SL = 1.5x ATR(14)
+RISK_PCT = 0.12            # 12% Kelly-informed risk per trade
 
-def bs_price(S, K, T, r, sigma, opt="call"):
-    if T <= 0: return max(S - K, 0) if opt == "call" else max(K - S, 0)
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-    d2 = d1 - sigma * math.sqrt(T)
-    if opt == "call":
-        return S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
-    return K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
 
-def dynamic_slippage(vix):
-    """VIX-adaptive slippage per contract side (one-way).
-    Base  : $0.03 (VIX < 20, calm market)
-    Mid   : $0.05 (VIX 20-25)
-    Elevated: $0.06 (VIX 25-30)
-    High  : $0.08 (VIX 30+)
-    """
-    if vix >= 30:
-        return 0.08
-    if vix >= 25:
-        return 0.06
-    if vix >= 20:
-        return 0.05
-    return 0.03
 
 ALPACA_DATA_URL = "https://data.alpaca.markets"
 ALPACA_HEADERS = {
@@ -320,268 +301,82 @@ def _pct(price, prev):
     return ((price / prev) - 1) * 100 if prev > 0 else 0.0
 
 
-# ── Scoring Engine (imported) ──────────────────────────────────────
+# ── ES Futures Order Flow Simulator ───────────────────────────────
 
-def _get_0dte_option_chain(spy_price, vix_price):
-    """
-    Fetch 0DTE SPY Option Chain from Alpaca Option Market Data API.
-    Returns:
-      dict: A map of {strike: {"call": contract_snapshot, "put": contract_snapshot}}
-      or None if API fails or lacks permission.
-    """
-    if not spy_price:
+def _calculate_es_order_flow(spy_price, vix_price, normalized_score, direction_bias):
+    """Generate ES Futures Depth of Market (DOM) simulation.
+    Produces 11 tick levels around current price at 0.25pt resolution.
+    VIX-adaptive liquidity depth + Cumulative Volume Delta."""
+    if spy_price is None or spy_price <= 0:
         return None
-        
-    # Optimization: Only fetch real (expensive) options data during regular trading hours.
-    # During pre-market and after-hours, fall back to Black-Scholes estimate to save API costs.
-    now_ny = datetime.now(NY)
-    status = get_market_status(now_ny)
-    if status != 'regular':
-        return None
-    # Explicit opt-in for the expensive Options Market Data API
-    if os.getenv("ENABLE_OPTIONS_API", "false").lower() != "true":
-        return None
-
-    api_key = ALPACA_HEADERS.get("APCA-API-KEY-ID", "")
-    api_secret = ALPACA_HEADERS.get("APCA-API-SECRET-KEY", "")
-    if not api_key or not api_secret:
-        return None
-
-    # 1. Get today's date in NY Time
-    now_ny = datetime.now(NY)
-    today_str = now_ny.strftime("%Y-%m-%d")
-
-    try:
-        # 2. Get active SPY contracts for today or closest next date from Trading API
-        is_paper = api_key.startswith("PK")
-        trading_url = "https://paper-api.alpaca.markets" if is_paper else "https://api.alpaca.markets"
-        contracts_url = f"{trading_url}/v2/options/contracts"
-        
-        params = {
-            "underlying_symbol": "SPY",
-            "status": "active",
-            "expiration_date_gte": today_str,
-            "limit": 100
-        }
-        r = requests.get(contracts_url, headers=ALPACA_HEADERS, params=params, timeout=5)
-        if r.status_code != 200:
-            print(f"[Alpaca Options] Error fetching contracts from {contracts_url} (HTTP {r.status_code}): {r.text}")
-            return None
-
-        contracts_data = r.json().get("option_contracts", [])
-        if not contracts_data:
-            return None
-
-        # Sort and find the closest expiration date
-        expirations = sorted(list(set(c["expiration_date"] for c in contracts_data)))
-        target_exp = expirations[0] if expirations else today_str
-
-        # 3. Filter contracts by closest expiration and strikes around spy_price (+/- 4 strikes)
-        strike_center = int(round(spy_price))
-        strikes_to_fetch = set(range(strike_center - 4, strike_center + 5))
-
-        filtered_contracts = []
-        for c in contracts_data:
-            if c.get("expiration_date") == target_exp:
-                try:
-                    strike = int(float(c["strike_price"]))
-                    if strike in strikes_to_fetch:
-                        filtered_contracts.append(c)
-                except (ValueError, TypeError):
-                    continue
-
-        if not filtered_contracts:
-            return None
-
-        # 4. Get snapshots for filtered contracts using Market Data API v1beta1
-        symbols = [c["symbol"] for c in filtered_contracts]
-        symbols_str = ",".join(symbols)
-
-        snapshots_url = f"{ALPACA_DATA_URL}/v1beta1/options/snapshots"
-        snap_params = {"symbols": symbols_str}
-        snap_r = requests.get(snapshots_url, headers=ALPACA_HEADERS, params=snap_params, timeout=5)
-        
-        # If forbidden or subscription error, automatically fallback to indicative feed
-        if snap_r.status_code == 403 or "subscription" in snap_r.text.lower():
-            print(f"[Alpaca Options] 403/Subscription restriction on default feed. Retrying with indicative feed...")
-            snap_params["feed"] = "indicative"
-            snap_r = requests.get(snapshots_url, headers=ALPACA_HEADERS, params=snap_params, timeout=5)
-
-        if snap_r.status_code != 200:
-            print(f"[Alpaca Options] Error fetching snapshots from {snapshots_url} (HTTP {snap_r.status_code}): {snap_r.text}")
-            return None
-
-        snapshots = snap_r.json().get("snapshots", {})
-        if not snapshots:
-            return None
-
-        # 5. Build structured chain map
-        chain_map = {}
-        for strike in strikes_to_fetch:
-            chain_map[strike] = {"call": None, "put": None}
-
-        for c in filtered_contracts:
-            sym = c["symbol"]
-            strike = int(float(c["strike_price"]))
-            opt_type = c["type"].lower()  # "call" or "put"
-
-            if strike not in chain_map:
-                continue
-
-            snap = snapshots.get(sym, {})
-            quote = snap.get("latestQuote", {})
-            trade = snap.get("latestTrade", {})
-
-            bid = quote.get("bp")
-            ask = quote.get("ap")
-            last = trade.get("p")
-
-            chain_map[strike][opt_type] = {
-                "symbol": sym,
-                "bid": float(bid) if bid is not None else None,
-                "ask": float(ask) if ask is not None else None,
-                "last": float(last) if last is not None else None,
-                "bid_size": quote.get("bs"),
-                "ask_size": quote.get("as"),
-            }
-
-        return chain_map
-
-    except Exception as e:
-        print(f"Error fetching Alpaca option chain: {e}")
-        return None
-
-
-def _calculate_strike_recommendation(spy_price, direction_bias, signal_grade,
-                                      vix_price, vwap, normalized_score,
-                                      portfolio_cash, now_et):
-    if spy_price is None or direction_bias == "NEUTRAL" or signal_grade in ("NONE",):
-        # We still want to return a default Option Chain even if no active recommendation,
-        # so users can see the Option Chain live on the dashboard anytime.
-        pass
-
-    atm_strike = round(spy_price) if spy_price is not None else 500
-    if signal_grade == "STRONG": otm_offset, strike_reasoning = 0, "ATM — high conviction"
-    elif signal_grade == "MODERATE": otm_offset, strike_reasoning = 1, "OTM-1 — balanced cost/probability"
-    else: otm_offset, strike_reasoning = 2, "OTM-2 — monitor zone"
-
-    if direction_bias == "CALL":
-        recommended_strike = atm_strike + otm_offset
-        otm_1, otm_2 = atm_strike + 1, atm_strike + 2
-        contract_type, type_label = "C", "CALL"
-    else:
-        recommended_strike = atm_strike - otm_offset
-        otm_1, otm_2 = atm_strike - 1, atm_strike - 2
-        contract_type, type_label = "P", "PUT"
-
-    contract_label = f"SPY ${recommended_strike}{contract_type} 0DTE"
-
-    # 1. Try fetching real option chain
-    vix_val = vix_price if vix_price else 18.0
-    iv = vix_val / 100.0
-    T = max(1.0 / (252.0 * 6.5), 1e-4)
-
-    chain_data = _get_0dte_option_chain(spy_price, vix_price)
     
-    # 2. Extract values for recommended strike
-    real_bid, real_ask, real_last = None, None, None
-    data_source = "BS_ESTIMATE"
-    mid_premium = 0.0
-
-    if chain_data and recommended_strike in chain_data:
-        opt_key = "call" if contract_type == "C" else "put"
-        opt_snap = chain_data[recommended_strike][opt_key]
-        if opt_snap and opt_snap.get("bid") is not None and opt_snap.get("ask") is not None:
-            real_bid = opt_snap["bid"]
-            real_ask = opt_snap["ask"]
-            real_last = opt_snap["last"]
-            mid_premium = max(round((real_bid + real_ask) / 2.0, 2), 0.01)
-            data_source = "LIVE"
-
-    if data_source == "BS_ESTIMATE":
-        opt = "call" if contract_type == "C" else "put"
-        atm_est = bs_price(spy_price, recommended_strike, T, 0.05, iv, opt)
-        otm_discount = max(0.35, 1.0 - (otm_offset * 0.2))
-        mid_premium = max(round(atm_est * otm_discount, 2), 0.05)
-
-    est_premium_low = real_bid if real_bid is not None else max(round(mid_premium * 0.85, 2), 0.01)
-    est_premium_high = real_ask if real_ask is not None else max(round(mid_premium * 1.15, 2), 0.10)
-
-    # 3. Dynamic target and stop prices
-    target_pct, stop_pct = 50, 30
-    target_price = round(mid_premium * 1.5, 2)
-    stop_price = round(mid_premium * 0.7, 2)
-    risk_per = round(mid_premium * (stop_pct / 100.0), 2)
-    reward_per = round(mid_premium * (target_pct / 100.0), 2)
-    rr_ratio = round(reward_per / risk_per, 2) if risk_per > 0 else 0
-
-    max_risk_pct = 10.0
-    max_risk_dollars = round(portfolio_cash * (max_risk_pct / 100.0), 2)
-    cost_per_contract = round(mid_premium * 100, 2)
-    max_contracts = max(1, int(max_risk_dollars / cost_per_contract)) if cost_per_contract > 0 else 0
-
-    # 4. Construct Option Chain payload for the frontend
-    option_chain_list = []
-    strike_center = int(round(spy_price)) if spy_price else 500
-    strikes_range = range(strike_center - 3, strike_center + 4)
-
-    for strike in strikes_range:
-        call_info = {"bid": None, "ask": None, "last": None, "source": "ESTIMATE"}
-        put_info = {"bid": None, "ask": None, "last": None, "source": "ESTIMATE"}
-
-        if chain_data and strike in chain_data:
-            # Live Call
-            c_snap = chain_data[strike]["call"]
-            if c_snap and c_snap.get("bid") is not None:
-                call_info = {"bid": c_snap["bid"], "ask": c_snap["ask"], "last": c_snap["last"], "source": "LIVE"}
-            # Live Put
-            p_snap = chain_data[strike]["put"]
-            if p_snap and p_snap.get("bid") is not None:
-                put_info = {"bid": p_snap["bid"], "ask": p_snap["ask"], "last": p_snap["last"], "source": "LIVE"}
-
-        # Fallback to BS if no live data
-        if call_info["source"] == "ESTIMATE":
-            c_est = bs_price(spy_price, strike, T, 0.05, iv, "call")
-            call_info["bid"] = max(round(c_est * 0.95, 2), 0.01)
-            call_info["ask"] = max(round(c_est * 1.05, 2), 0.02)
-            call_info["last"] = max(round(c_est, 2), 0.01)
-
-        if put_info["source"] == "ESTIMATE":
-            p_est = bs_price(spy_price, strike, T, 0.05, iv, "put")
-            put_info["bid"] = max(round(p_est * 0.95, 2), 0.01)
-            put_info["ask"] = max(round(p_est * 1.05, 2), 0.02)
-            put_info["last"] = max(round(p_est, 2), 0.01)
-
-        is_recommended = (strike == recommended_strike) and (direction_bias != "NEUTRAL" and signal_grade != "NONE")
-
-        option_chain_list.append({
-            "strike": strike,
-            "is_recommended": is_recommended,
-            "call": call_info,
-            "put": put_info
+    vix = vix_price if vix_price and vix_price > 0 else 18.0
+    
+    # Center price to nearest ES tick (0.25 pt)
+    center = round(spy_price * 4) / 4.0
+    
+    # VIX-adaptive base liquidity (higher VIX = thinner books)
+    if vix >= 30:
+        base_size = 40
+    elif vix >= 25:
+        base_size = 80
+    elif vix >= 20:
+        base_size = 120
+    else:
+        base_size = 200
+    
+    levels = []
+    for i in range(-5, 6):
+        price = round(center + i * 0.25, 2)
+        # Distance from center affects depth (closer = thicker)
+        dist = abs(i)
+        depth_factor = max(0.3, 1.0 - dist * 0.12)
+        
+        bid_size = max(5, int(base_size * depth_factor * (0.7 + random.random() * 0.6)))
+        ask_size = max(5, int(base_size * depth_factor * (0.7 + random.random() * 0.6)))
+        
+        # Bias: stronger signal shifts liquidity
+        if direction_bias == "CALL":  # Bullish
+            if i < 0:  # Below center: more bids (support)
+                bid_size = int(bid_size * 1.3)
+            else:  # Above center: thinner asks (less resistance)
+                ask_size = int(ask_size * 0.8)
+        elif direction_bias == "PUT":  # Bearish
+            if i > 0:  # Above center: more asks (resistance)
+                ask_size = int(ask_size * 1.3)
+            else:  # Below center: thinner bids (less support)
+                bid_size = int(bid_size * 0.8)
+        
+        is_current = (i == 0)
+        levels.append({
+            "price": price,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+            "is_current": is_current,
         })
-
-    active_rec = (spy_price is not None) and (direction_bias != "NEUTRAL") and (signal_grade not in ("NONE",))
-
+    
+    # CVD (Cumulative Volume Delta): net buying - selling pressure
+    total_bids = sum(l["bid_size"] for l in levels)
+    total_asks = sum(l["ask_size"] for l in levels)
+    cvd_raw = total_bids - total_asks
+    cvd_pct = round((cvd_raw / max(total_bids + total_asks, 1)) * 100, 1)
+    
     return {
-        "active": active_rec, "direction": type_label if active_rec else "NEUTRAL", "atm_strike": atm_strike,
-        "recommended_strike": recommended_strike, "otm_offset": otm_offset,
-        "contract_label": contract_label if active_rec else "SPY 0DTE", "contract_type": contract_type if active_rec else "C",
-        "strikes": [
-            {"label": "ATM", "strike": atm_strike, "recommended": otm_offset == 0 and active_rec},
-            {"label": "OTM-1", "strike": otm_1, "recommended": otm_offset == 1 and active_rec},
-            {"label": "OTM-2", "strike": otm_2, "recommended": otm_offset == 2 and active_rec},
-        ],
-        "est_premium_low": est_premium_low, "est_premium_high": est_premium_high,
-        "mid_premium": mid_premium, "data_source": data_source,
-        "real_bid": real_bid, "real_ask": real_ask, "real_last": real_last,
-        "target_pct": target_pct, "stop_pct": stop_pct,
-        "target_price": target_price, "stop_price": stop_price,
-        "risk_reward": f"1:{rr_ratio}", "max_contracts": max_contracts,
-        "cost_per_contract": cost_per_contract, "max_risk_dollars": max_risk_dollars,
-        "max_risk_pct": max_risk_pct, "reasoning": strike_reasoning,
-        "option_chain": option_chain_list
+        "levels": levels,
+        "center_price": center,
+        "total_bids": total_bids,
+        "total_asks": total_asks,
+        "cvd": cvd_raw,
+        "cvd_pct": cvd_pct,
+        "max_depth": max(max(l["bid_size"] for l in levels), max(l["ask_size"] for l in levels)),
+        "bias": direction_bias,
+        "vix_regime": "HIGH" if vix >= 25 else ("ELEVATED" if vix >= 20 else "NORMAL"),
     }
+
+
+
+
+
 
 PORTFOLIO_STORAGE_KEY = os.getenv("PORTFOLIO_STORAGE_KEY", "arungun_portfolio")
 MAX_TRADE_HISTORY = 250
@@ -964,84 +759,42 @@ def _build_recent_trades(pf):
     return _cap_list(_dedupe_ledger_rows(rows))
 
 def _close_trade(pos, now, spy_p, exit_val, exit_type):
+    """Close an ES futures position (used for stale cleanup)."""
     contracts = int(pos.get("contracts", 0) or 0)
-    cost = float(pos.get("cost", 0) or 0)
-    revenue = round(float(exit_val) * 100 * contracts, 2)
-    pnl = round(revenue - cost, 2)
-    pnl_pct = round((pnl / cost) * 100, 1) if cost > 0 else 0.0
+    entry_price = pos.get("entry_price", 0)
+    es_dir = pos.get("es_direction", "LONG")
+    
+    if es_dir == "LONG":
+        point_pnl = (spy_p - entry_price) if spy_p else 0
+    else:
+        point_pnl = (entry_price - spy_p) if spy_p else 0
+    
+    pnl = round(point_pnl * ES_MULTIPLIER * contracts - ES_COMMISSION_RT * contracts, 2)
+    margin_locked = pos.get("margin_locked", ES_DAY_MARGIN * contracts)
+    pnl_pct = round((pnl / margin_locked) * 100, 1) if margin_locked > 0 else 0.0
+    
     pos.update({
         "status": "CLOSED",
-        "action": "SELL",
         "exit_time": now.strftime("%H:%M"),
         "exit_ts": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "exit_spy": round(spy_p, 2) if spy_p else None,
-        "exit_val": round(float(exit_val), 2),
+        "exit_price": round(spy_p, 2) if spy_p else None,
+        "exit_val": round(float(exit_val), 2) if exit_val else 0,
         "exit_type": exit_type,
-        "revenue": revenue,
+        "revenue": round(margin_locked + pnl, 2),
         "pnl": pnl,
         "realized_pnl": pnl,
         "pnl_pct": pnl_pct,
         "pnl_locked": True,
         "win": pnl > 0,
     })
-    for key in ("unrealized_pnl", "unrealized_pnl_pct", "mark_spy", "mark_time"):
+    for key in ("unrealized_pnl", "unrealized_pnl_pct", "mark_spy", "mark_time", "current_val", "current_price", "point_pnl"):
         pos.pop(key, None)
     return pos
 
 
-def _count_day_trades(portfolio, now):
-    """Count day trades in the rolling 5-business-day window.
-    A day trade = open and close on the same calendar day."""
-    history = portfolio.get("history") or []
-    # Build list of the last N business days (exclude weekends)
-    biz_days = []
-    d = now.date() if hasattr(now, 'date') else now
-    while len(biz_days) < PDT_WINDOW_DAYS:
-        if d.weekday() < 5:  # Mon-Fri
-            biz_days.append(d.strftime("%Y-%m-%d"))
-        d -= timedelta(days=1)
-    count = 0
-    for h in history:
-        if not isinstance(h, dict):
-            continue
-        trade_date = h.get("date", "")
-        if trade_date not in biz_days:
-            continue
-        # A day trade: opened and closed on the same day
-        if h.get("status") == "CLOSED" or h.get("pnl_locked"):
-            count += 1
-    return count, biz_days
-
-
-def _pdt_status(portfolio, now):
-    """Return PDT enforcement info dict."""
-    account_value = portfolio.get("cash", 0) + sum(
-        float(p.get("cost", 0)) for p in (portfolio.get("positions") or {}).values()
-    )
-    subject = account_value < PDT_THRESHOLD
-    used, window = _count_day_trades(portfolio, now)
-    remaining = max(0, PDT_MAX_DAY_TRADES - used) if subject else 999
-    blocked = subject and used >= PDT_MAX_DAY_TRADES
-    return {
-        "subject": subject,
-        "threshold": PDT_THRESHOLD,
-        "account_value": round(account_value, 2),
-        "day_trades_used": used,
-        "day_trades_remaining": remaining,
-        "blocked": blocked,
-        "window_days": biz_days_label(window),
-    }
-
-
-def biz_days_label(days):
-    """Return first and last date of the window for display."""
-    if not days:
-        return ""
-    return f"{days[-1]} ~ {days[0]}"
-
 
 def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now=None):
-    """Same rules used to open a debit spread."""
+    """Check if ES futures entry criteria are met. No PDT for futures."""
     layers = score_result.get("layers", {})
     if layers.get("risk", {}).get("passed") is False or grade == "LOCKED":
         return False
@@ -1051,12 +804,12 @@ def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now
         return False
     if direction_bias not in ("CALL", "PUT"):
         return False
-    # ── PDT Rule ──
-    if portfolio and now:
-        pdt = _pdt_status(portfolio, now)
-        if pdt["blocked"]:
-            return False
     return True
+
+
+
+
+
 
 
 def _position_invalid_reason(open_pos, grade, direction_bias, score_result):
@@ -1507,152 +1260,138 @@ class handler(BaseHTTPRequestHandler):
             if to_remove:
                 for k in to_remove: del portfolio["positions"][k]
 
-            # 2. Check for entry (only while entry criteria hold)
+            # 2. Check for entry — ES Futures (direct contract, no spreads)
             open_pos = portfolio.get("positions", {}).get(today_str)
             if not open_pos and is_regular and _entry_criteria_met(grade, direction_bias, score_result, portfolio, now):
-                # Open Debit Spread — dynamic width & sizing by account tier
-                iv = vix_val / 100.0
-                opt = "call" if direction_bias == "CALL" else "put"
                 cash = portfolio["cash"]
-
-                # Spread width scales with account size
-                if cash < 1000:
-                    spread_w = 2      # $500-tier: narrow $2-wide spreads
-                elif cash < 5000:
-                    spread_w = 3      # $1k-tier: $3-wide spreads
-                else:
-                    spread_w = 5      # $5k+: full $5-wide spreads
-
-                K_buy = round(spy_p)
-                K_sell = K_buy + spread_w if opt == "call" else K_buy - spread_w
-
-                # Try to use real option chain quotes for entry debit
-                real_entry_ok = False
-                net_debit = 0.0
-                chain_entry = _get_0dte_option_chain(spy_p, vix_val)
-                if chain_entry and K_buy in chain_entry and K_sell in chain_entry:
-                    buy_snap = chain_entry[K_buy][opt]
-                    sell_snap = chain_entry[K_sell][opt]
-                    if buy_snap and sell_snap and buy_snap.get("ask") is not None and sell_snap.get("bid") is not None:
-                        # Buy long at Ask, Sell short at Bid (Debit Spread debit cost)
-                        net_debit = buy_snap["ask"] - sell_snap["bid"]
-                        if net_debit > 0.02:
-                            real_entry_ok = True
+                es_direction = "LONG" if direction_bias == "CALL" else "SHORT"
                 
-                if not real_entry_ok:
-                    slip = dynamic_slippage(vix_val)
-                    T_entry = 5.5 / (252 * 6.5)
-                    lp = bs_price(spy_p, K_buy, T_entry, 0.05, iv, opt)
-                    sp = bs_price(spy_p, K_sell, T_entry, 0.05, iv, opt)
-                    net_debit = (lp - sp) * 1.03 + slip * 2
-
-                if net_debit > 0.05:
-                    # Risk % scales with account tier & signal strength
-                    if cash < 1000:
-                        risk_pct = 0.20 if normalized >= 95 else (0.18 if vix_val >= 25 else (0.15 if vix_val >= 20 else 0.12))
-                    elif cash < 5000:
-                        risk_pct = 0.15 if normalized >= 95 else (0.12 if vix_val >= 25 else (0.10 if vix_val >= 20 else 0.08))
+                # ATR-based SL (use range as proxy)
+                atr_proxy = max(d_range, 2.0) if d_range > 0 else 4.0
+                sl_points = max(ATR_SL_MULT * atr_proxy, 2.0)
+                sl_points = min(sl_points, 15.0)
+                tp_points = sl_points * 2.0  # 2:1 R/R
+                
+                # Position sizing
+                risk_per_contract = sl_points * ES_MULTIPLIER + ES_COMMISSION_RT
+                max_risk = cash * RISK_PCT
+                max_by_margin = int(cash * 0.95 / ES_DAY_MARGIN)
+                contracts = min(max(1, int(max_risk / risk_per_contract)), max_by_margin)
+                
+                if contracts > 0 and contracts * ES_DAY_MARGIN <= cash:
+                    margin_locked = contracts * ES_DAY_MARGIN
+                    entry_price = round(spy_p, 2)
+                    if es_direction == "LONG":
+                        sl_price = round(entry_price - sl_points, 2)
+                        tp_price = round(entry_price + tp_points, 2)
                     else:
-                        risk_pct = 0.10 if normalized >= 95 else (0.08 if vix_val >= 25 else (0.06 if vix_val >= 20 else 0.05))
+                        sl_price = round(entry_price + sl_points, 2)
+                        tp_price = round(entry_price - tp_points, 2)
+                    
+                    trade_id = f"{today_str}-{now.strftime('%H%M%S')}-ES-{es_direction}"
+                    new_pos = _ensure_trade_id({
+                        "trade_id": trade_id, "date": today_str, "status": "OPEN",
+                        "instrument": "ES", "direction": direction_bias,
+                        "es_direction": es_direction,
+                        "entry_price": entry_price, "contracts": contracts,
+                        "sl_price": sl_price, "tp_price": tp_price,
+                        "sl_points": round(sl_points, 2), "tp_points": round(tp_points, 2),
+                        "margin_locked": margin_locked,
+                        "entry_time": now.strftime("%H:%M"),
+                        "entry_ts": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "time": now.strftime("%H:%M"),
+                        "score": normalized, "grade": signal["grade"],
+                        "unrealized_pnl": 0.0, "unrealized_pnl_pct": 0.0,
+                    })
+                    portfolio["positions"][today_str] = new_pos
+                    portfolio["cash"] -= margin_locked
+                    _append_trade_event(portfolio, {
+                        "event": "OPEN",
+                        "trade_id": trade_id, "date": today_str,
+                        "time": now.strftime("%H:%M"),
+                        "direction": direction_bias, "es_direction": es_direction,
+                        "grade": signal["grade"], "score": normalized,
+                        "entry_price": entry_price, "contracts": contracts,
+                        "sl_price": sl_price, "tp_price": tp_price,
+                        "margin_locked": margin_locked,
+                    })
 
-                    max_risk = cash * risk_pct
-                    max_position = cash * 0.35          # never >35% of cash in one trade
-                    cost_per_contract = net_debit * 100
-                    contracts = int(min(max_risk, max_position) / cost_per_contract)
-                    if contracts == 0 and cost_per_contract <= cash:
-                        contracts = 1
-
-                    if contracts > 0 and cost_per_contract * contracts <= cash:
-                        cost = round(cost_per_contract * contracts, 2)
-                        trade_id = f"{today_str}-{now.strftime('%H%M%S')}-{direction_bias}"
-                        new_pos = _ensure_trade_id({
-                            "trade_id": trade_id, "date": today_str, "status": "OPEN", "action": "BUY",
-                            "score": normalized, "grade": signal["grade"],
-                            "direction": direction_bias, "K_buy": K_buy, "K_sell": K_sell,
-                            "spread_width": spread_w,
-                            "net_debit": round(net_debit, 2), "contracts": contracts, "cost": cost,
-                            "entry_spy": round(spy_p, 2), "entry_time": now.strftime("%H:%M"),
-                            "entry_ts": now.strftime("%Y-%m-%d %H:%M:%S"), "time": now.strftime("%H:%M"),
-                            "current_val": round(net_debit, 2), "unrealized_pnl": 0.0, "unrealized_pnl_pct": 0.0
-                        })
-                        portfolio["positions"][today_str] = new_pos
-                        portfolio["cash"] -= cost
-                        _append_trade_event(portfolio, {
-                            "event": "OPEN",
-                            "trade_id": trade_id,
-                            "date": today_str,
-                            "time": now.strftime("%H:%M"),
-                            "direction": direction_bias,
-                            "grade": signal["grade"],
-                            "score": normalized,
-                            "K_buy": K_buy,
-                            "K_sell": K_sell,
-                            "spread_width": spread_w,
-                            "contracts": contracts,
-                            "entry_spy": round(spy_p, 2),
-                            "net_debit": round(net_debit, 2),
-                            "cost": cost,
-                        })
-
-            # 3. Manage open position — mark, exit when signal invalid / SL / TP / EOD
+            # 3. Manage open ES futures position
             open_pos = portfolio.get("positions", {}).get(today_str)
             if open_pos:
-                iv = vix_val / 100.0
-                opt = "call" if open_pos["direction"] == "CALL" else "put"
-                hours_rem = max(0.1, 16.0 - (now.hour + now.minute/60.0))
-                T_rem = hours_rem / (252 * 6.5)
+                entry_price = open_pos.get("entry_price", spy_p)
+                contracts = open_pos.get("contracts", 1)
+                es_dir = open_pos.get("es_direction", "LONG")
                 
-                # Try to use real option chain quotes for exit valuation
-                real_exit_ok = False
-                current_val = 0.0
-                chain_exit = _get_0dte_option_chain(spy_p, vix_val)
-                if chain_exit and open_pos["K_buy"] in chain_exit and open_pos["K_sell"] in chain_exit:
-                    buy_snap = chain_exit[open_pos["K_buy"]][opt]
-                    sell_snap = chain_exit[open_pos["K_sell"]][opt]
-                    if buy_snap and sell_snap and buy_snap.get("bid") is not None and sell_snap.get("ask") is not None:
-                        # Sell long at Bid, Buy short at Ask (closing credit revenue)
-                        current_val = buy_snap["bid"] - sell_snap["ask"]
-                        real_exit_ok = True
+                if es_dir == "LONG":
+                    point_pnl = spy_p - entry_price
+                else:
+                    point_pnl = entry_price - spy_p
                 
-                if not real_exit_ok:
-                    slip_exit = dynamic_slippage(vix_val)
-                    lp = bs_price(spy_p, open_pos["K_buy"], T_rem, 0.05, iv, opt)
-                    sp = bs_price(spy_p, open_pos["K_sell"], T_rem, 0.05, iv, opt)
-                    current_val = max(0, lp - sp) * 0.97 - slip_exit * 2
-
-                current_val = max(0, current_val)
-                mark_value = round(max(0, current_val), 2)
-                mark_revenue = round(mark_value * 100 * open_pos["contracts"], 2)
-                open_pos["current_val"] = mark_value
-                open_pos["mark_spy"] = round(spy_p, 2)
+                unrealized_pnl = round(point_pnl * ES_MULTIPLIER * contracts - ES_COMMISSION_RT * contracts, 2)
+                margin_locked = open_pos.get("margin_locked", ES_DAY_MARGIN * contracts)
+                unrealized_pnl_pct = round((unrealized_pnl / margin_locked) * 100, 1) if margin_locked > 0 else 0.0
+                
+                open_pos["current_price"] = round(spy_p, 2)
                 open_pos["mark_time"] = now.strftime("%H:%M")
-                open_pos["unrealized_pnl"] = round(mark_revenue - open_pos["cost"], 2)
-                open_pos["unrealized_pnl_pct"] = round((open_pos["unrealized_pnl"] / open_pos["cost"]) * 100, 1) if open_pos.get("cost", 0) > 0 else 0.0
+                open_pos["unrealized_pnl"] = unrealized_pnl
+                open_pos["unrealized_pnl_pct"] = unrealized_pnl_pct
+                open_pos["point_pnl"] = round(point_pnl, 2)
                 
-                tp_price = open_pos["net_debit"] * 2.0
-                exit_val = mark_value
                 exit_type = None
-
+                sl_price = open_pos.get("sl_price")
+                tp_price = open_pos.get("tp_price")
+                
                 invalid_reason = _position_invalid_reason(open_pos, grade, direction_bias, score_result)
                 if invalid_reason:
                     exit_type = invalid_reason
-                elif open_pos["unrealized_pnl_pct"] <= -50.0:
+                elif es_dir == "LONG" and sl_price and spy_p <= sl_price:
                     exit_type = "SL"
-                elif current_val >= tp_price:
-                    exit_val = tp_price
+                elif es_dir == "SHORT" and sl_price and spy_p >= sl_price:
+                    exit_type = "SL"
+                elif es_dir == "LONG" and tp_price and spy_p >= tp_price:
                     exit_type = "TP"
-                elif not is_regular or now.hour >= 16:
+                elif es_dir == "SHORT" and tp_price and spy_p <= tp_price:
+                    exit_type = "TP"
+                elif not is_regular or (now.hour >= 15 and now.minute >= 30):
                     exit_type = "EOD"
-
+                
                 if exit_type:
-                    _record_position_close(portfolio, open_pos, today_str, now, spy_p, exit_val, exit_type)
+                    realized_pnl = unrealized_pnl
+                    open_pos.update({
+                        "status": "CLOSED", "exit_price": round(spy_p, 2),
+                        "exit_time": now.strftime("%H:%M"),
+                        "exit_ts": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "exit_type": exit_type,
+                        "pnl": realized_pnl, "realized_pnl": realized_pnl,
+                        "pnl_pct": unrealized_pnl_pct, "pnl_locked": True,
+                        "win": realized_pnl > 0,
+                    })
+                    for key in ("unrealized_pnl", "unrealized_pnl_pct", "current_price", "mark_time", "point_pnl"):
+                        open_pos.pop(key, None)
+                    portfolio["cash"] += margin_locked + realized_pnl
+                    _append_history(portfolio, open_pos.copy())
+                    _append_trade_event(portfolio, {
+                        "event": "CLOSE", "trade_id": open_pos.get("trade_id"),
+                        "date": open_pos.get("date"),
+                        "entry_time": open_pos.get("entry_time"),
+                        "exit_time": open_pos.get("exit_time"),
+                        "direction": open_pos.get("direction"),
+                        "es_direction": es_dir,
+                        "entry_price": entry_price, "exit_price": round(spy_p, 2),
+                        "contracts": contracts, "exit_type": exit_type,
+                        "pnl": realized_pnl, "pnl_pct": open_pos.get("pnl_pct"),
+                        "win": open_pos.get("win"),
+                    })
+                    del portfolio["positions"][today_str]
                 else:
                     portfolio["positions"][today_str] = open_pos
 
+
             portfolio["recent_trades"] = _build_recent_trades(portfolio)
-            portfolio["pdt"] = _pdt_status(portfolio, now)
+
             save_ok = save_portfolio(portfolio)
-            portfolio["persist_ok"] = save_ok
+
             portfolio["storage_type"] = portfolio.get("_storage", "unknown")
             portfolio["trade_count"] = len(portfolio.get("history") or [])
 
@@ -1687,10 +1426,9 @@ class handler(BaseHTTPRequestHandler):
                 s = snaps.get(sym, {})
                 gme_data[sym] = {"price": _snap_price(s), "pct": _pct(_snap_price(s), _snap_prev_close(s) or 1)}
 
-            strike_rec = _calculate_strike_recommendation(
-                spy_price=spy_p, direction_bias=direction_bias, signal_grade=signal["grade"],
-                vix_price=vix_p, vwap=vwap, normalized_score=normalized,
-                portfolio_cash=portfolio.get("cash", STARTING_BALANCE), now_et=now,
+            order_flow = _calculate_es_order_flow(
+                spy_price=spy_p, vix_price=vix_p,
+                normalized_score=normalized, direction_bias=direction_bias,
             )
 
             # Day counters (Day 1 = 2026-05-22)
@@ -1733,7 +1471,7 @@ class handler(BaseHTTPRequestHandler):
                 "total_score": normalized, "max_score": active_max, "raw_score": raw_total,
                 "signal": signal, "direction_bias": direction_bias,
                 "layers": score_result["layers"],
-                "strike_recommendation": strike_rec,
+                "order_flow": order_flow,
                 "verdict": signal["label"], "confidence": normalized, "reason": signal["action"],
                 "rules": rules, "alert_mode": "ON SIGNAL CHANGE",
                 "indices": indices_out, "mag7": mag7_out,
