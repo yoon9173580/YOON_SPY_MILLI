@@ -1633,7 +1633,7 @@ async function loadData() {
       // we can afford more aggressive polling during regular market hours.
       // User plans to run this for ~3 months of live trading.
       if (marketStatus === 'regular') {
-        startDataPolling(10000);                    // 10 seconds during core hours (more aggressive, safe without Options API)
+        startDataPolling(8000);                     // 8 seconds during core hours (aggressive, Options API disabled)
       } else if (marketStatus === 'pre_market' || marketStatus === 'after_hours') {
         startDataPolling(5 * 60 * 1000);            // 5 minutes during extended hours (cost priority)
       } else {
