@@ -23,10 +23,11 @@ from engines.technical import calculate_technical_score
 from engines.risk_manager import check_risk_rules
 
 
-# ── Signal Grade Thresholds ─────────────────────────────────────────
-GRADE_STRONG   = 90
-GRADE_MODERATE = 75
-GRADE_WEAK     = 60
+# ── Signal Grade Thresholds (loaded from env for security / easy tuning) ──
+import os
+GRADE_STRONG   = int(os.getenv("GRADE_STRONG", "90"))
+GRADE_MODERATE = int(os.getenv("GRADE_MODERATE", "75"))
+GRADE_WEAK     = int(os.getenv("GRADE_WEAK", "60"))
 
 
 def determine_signal_grade(total_score: int) -> dict:
