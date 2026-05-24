@@ -21,6 +21,7 @@ from engines.correlation import calculate_correlation_score
 from engines.time_window import calculate_time_score
 from engines.technical import calculate_technical_score
 from engines.risk_manager import check_risk_rules
+from engines.ml_weights import get_ml_multipliers
 
 
 # ── Signal Grade Thresholds (loaded from env for security / easy tuning) ──
@@ -154,6 +155,12 @@ def run_score_engine(now_et: datetime,
     layers["risk"] = check_risk_rules(portfolio)
 
     # ── TOTAL SCORE CALCULATION ─────────────────────────────────
+    # ── APPLY ML ADAPTIVE WEIGHTS ───────────────────────────────
+    ml = get_ml_multipliers()
+    layers["regime"]["score"] = int(layers["regime"]["score"] * ml.get("regime", 1.0))
+    layers["correlation"]["score"] = int(layers["correlation"]["score"] * ml.get("correlation", 1.0))
+    layers["technical"]["score"] = int(layers["technical"]["score"] * ml.get("technical", 1.0))
+
     # Sum layers 2 + 4 + 5 + 6 (Layer 1 = gate, Layer 3 = future, Layer 7 = lockout)
     active_scores = [
         layers["regime"]["score"],

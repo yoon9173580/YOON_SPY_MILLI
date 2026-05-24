@@ -9,12 +9,14 @@ import pandas as pd
 REGIME_TRENDING  = "TRENDING"
 REGIME_CHOPPY    = "CHOPPY"
 REGIME_BREAKOUT  = "BREAKOUT"
+REGIME_VOLATILE_CHOP = "VOLATILE_CHOP"
 REGIME_UNKNOWN   = "UNKNOWN"
 
 REGIME_STRATEGIES = {
     REGIME_TRENDING:  "추세 방향 진입, VWAP 리젝션 후 재진입",
     REGIME_CHOPPY:    "극단값 페이딩, 작은 목표, 빠른 청산",
     REGIME_BREAKOUT:  "돌파 확인 후 재테스트 대기 진입",
+    REGIME_VOLATILE_CHOP: "변동성 극심 — 박스권 매매 외 진입 금지",
     REGIME_UNKNOWN:   "레짐 불명 — 관망 권장",
 }
 
@@ -114,13 +116,13 @@ def _score_adx(adx_value: float) -> tuple:
 
 def _classify_regime(adx_value, vix_price, range_value, opening_range_broken=False):
     """Classify market regime based on indicators."""
+    if vix_price and vix_price > 25:
+        return REGIME_VOLATILE_CHOP
     if opening_range_broken and adx_value and adx_value >= 25:
         return REGIME_BREAKOUT
     if adx_value and adx_value >= 25:
         return REGIME_TRENDING
     if adx_value and adx_value < 20:
-        return REGIME_CHOPPY
-    if vix_price and vix_price > 25:
         return REGIME_CHOPPY
     return REGIME_UNKNOWN
 
@@ -174,6 +176,10 @@ def calculate_regime_score(vix_price: float, vix3m_price: float,
     # Regime classification
     regime = _classify_regime(adx_value, vix_price, None)
     strategy = REGIME_STRATEGIES.get(regime, "")
+    
+    # Penalize score in volatile chop to prevent false trend breakouts
+    if regime == REGIME_VOLATILE_CHOP:
+        total -= 30
 
     # VIX spread for display
     vix_spread = None
