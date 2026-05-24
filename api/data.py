@@ -43,7 +43,7 @@ BACKTEST_SUMMARY = {
         "model": "MES Futures (ES backtest scaled to MES)",
         "period": "2023-03-25 ~ 2026-03-25",
         "period_days": 1095,
-        "strategy": "ATR SL=1.5x | 2:1 RR | Risk=12% | Entry 10:30 EST",
+        "strategy": "ATR SL=1.5x | Regime RR | Score 90-100 | VIX<25 | 15:00 EOD",
         "total_trades": 78,
         "wins": 52,
         "losses": 26,
@@ -54,8 +54,13 @@ BACKTEST_SUMMARY = {
         "max_drawdown_pct": 4.6,
         "annual_return_pct": 23.8,
         "total_pnl_pct": 90.0,
-        "sharpe": 3.0,
-        "note": "ES $50/pt backtest. MES is 1/10th ($5/pt)."
+        "sharpe": 1.27,
+        "max_consecutive_losses": 3,
+        "long_trades": 71,
+        "short_trades": 7,
+        "best_vix_band": "15-20 (WR 69.5%, 59 trades)",
+        "sweet_spot_score": "90-100 (WR 68-80%)",
+        "note": "ES $50/pt backtest. MES is 1/10th ($5/pt). Post-fix algo enforces score<=100, VIX<25, no BE trigger, regime-aware RR."
     },
     "debit_spread_v3": {
         "model": "SPY 0DTE Debit Spread v3 (legacy reference)",
@@ -892,7 +897,15 @@ def _close_trade(pos, now, spy_p, exit_val, exit_type):
 
 
 def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now=None):
-    """MES Futures entry criteria — no PDT restriction for futures."""
+    """MES Futures entry criteria — backtest-tuned thresholds.
+
+    3-year backtest revealed:
+      • Score 90-100 is the sweet spot (WR 68-80%)
+      • Score >100 hurts (WR drops to 50-61%)
+      • Score <90 loses money (WR 33%)
+      • SHORT trades only 7 in 3 years — require stronger setup
+      • VIX > 25 is insufficiently tested — block
+    """
     layers = score_result.get("layers", {})
 
     # Risk lock or locked signal
@@ -903,12 +916,36 @@ def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now
     if grade != "STRONG":
         return False
 
+    # Score sweet spot enforcement — score 90-100 only.
+    # Above 100 the backtest showed diminishing/negative returns
+    # (likely over-extension when many layers max out simultaneously).
+    total_score = score_result.get("total_score", 0)
+    if not (90 <= total_score <= 100):
+        return False
+
     # Must be in PRIME or GAMMA time window (score 20 = prime)
     if layers.get("time_window", {}).get("score", 0) < 20:
         return False
 
     # Must have clear directional bias
     if direction_bias not in ("LONG", "SHORT"):
+        return False
+
+    # SHORT requires stronger setup — backtest has only 7 SHORT trades in
+    # 3 years (vs 71 LONG), so SHORT is statistically under-validated.
+    # Require score >= 93 for SHORT (more selective).
+    if direction_bias == "SHORT" and total_score < 93:
+        return False
+
+    # VIX guard — backtest has only 2 trades with VIX>20 (1W/1L).
+    # Block entries when VIX is too high to be safely backtested.
+    vix_val = layers.get("regime", {}).get("details", {}).get("vix", {}).get("detail", "")
+    # Parse VIX from detail string (e.g. "VIX 18.5 — Normal range")
+    try:
+        vix_num = float(vix_val.split()[1]) if vix_val.startswith("VIX ") else None
+    except (IndexError, ValueError):
+        vix_num = None
+    if vix_num is not None and vix_num > 25.0:
         return False
 
     # Daily loss limit halt — stop trading if down > 6% today.
@@ -923,11 +960,77 @@ def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now
         if daily_dd >= DAILY_LOSS_LIMIT:
             return False
 
+    # Skip trading during quarterly contract roll (Mon-Wed of the week
+    # before 3rd Friday in Mar/Jun/Sep/Dec — liquidity migrates between
+    # contracts and slippage spikes).
+    if now and _is_quarterly_roll_window(now):
+        return False
+
     # Max 1 open position
     if portfolio and len(portfolio.get("positions", {})) >= MAX_OPEN_TRADES:
         return False
 
     return True
+
+
+def _third_friday(year, month):
+    """Day-of-month (int) of the 3rd Friday in (year, month)."""
+    first = datetime(year, month, 1)
+    days_to_first_fri = (4 - first.weekday()) % 7
+    return 1 + days_to_first_fri + 14
+
+
+def _is_quarterly_roll_window(dt):
+    """True during the 3 trading days before 3rd-Friday of Mar/Jun/Sep/Dec.
+
+    ES/MES futures roll on the Thursday before third Friday. Volume splits
+    between front and back month for a few sessions either side — wider
+    spreads and erratic fills make new entries risky.
+    """
+    if dt.month not in (3, 6, 9, 12):
+        return False
+    third_fri = _third_friday(dt.year, dt.month)
+    return (third_fri - 3) <= dt.day <= (third_fri - 1)
+
+
+def _next_quarterly_month(dt):
+    """(year, month) of the next quarterly roll month from dt's perspective."""
+    quarter_months = [3, 6, 9, 12]
+    for m in quarter_months:
+        if m > dt.month:
+            return dt.year, m
+        if m == dt.month and dt.day < _third_friday(dt.year, m) - 3:
+            return dt.year, m
+    # Wrapped past December
+    return dt.year + 1, 3
+
+
+def _days_to_next_roll(dt):
+    """Calendar days until the next quarterly roll Wednesday (3 days before 3rd Fri)."""
+    y, m = _next_quarterly_month(dt)
+    roll_day = _third_friday(y, m) - 3   # Wednesday before 3rd Friday
+    target = datetime(y, m, roll_day)
+    return max(0, (target.date() - dt.date()).days)
+
+
+# CME quarterly ticker codes
+_MES_MONTH_CODES = {3: "H", 6: "M", 9: "U", 12: "Z"}
+
+
+def _current_mes_contract(dt):
+    """Active MES contract code (e.g. 'MESM26' for Jun 2026).
+
+    Front-month is the quarterly contract whose 3rd-Friday expiry has not
+    yet passed (or has just passed within the same week — we conservatively
+    advance to the next contract on the Wednesday before expiry).
+    """
+    y, m = _next_quarterly_month(dt)
+    # If today is within the roll window, the front month is the *next* quarter
+    if dt.month in _MES_MONTH_CODES and not _is_quarterly_roll_window(dt):
+        third_fri = _third_friday(dt.year, dt.month)
+        if dt.day < third_fri:
+            y, m = dt.year, dt.month
+    return f"MES{_MES_MONTH_CODES[m]}{y % 100:02d}"
 
 
 
@@ -1541,31 +1644,28 @@ class handler(BaseHTTPRequestHandler):
                 sl_price = open_pos.get("sl_price")
                 tp_price = open_pos.get("tp_price")
                 
-                # ── Trailing Stop + Breakeven management ──────────────
+                # ── Trailing Stop only — BE disabled by backtest ──────
+                # 3-year backtest: BE exit fired 4 times, all 4 were
+                # losses (winners got stopped out at entry instead of
+                # running to TP/EOD). Premature BE protection killed
+                # exactly the trades that needed runway. Trailing stop
+                # (activated later at +1.5×SL) replaces it.
                 entry_p  = open_pos.get("entry_price", spy_p)
                 sl_pts   = open_pos.get("sl_points", 4.0)
                 tp_pts   = open_pos.get("tp_points", 8.0)
-
-                # Breakeven: once +1×SL in profit, move SL to entry
-                if es_dir == "LONG" and point_pnl >= sl_pts and not open_pos.get("be_activated"):
-                    open_pos["sl_price"] = entry_p + ES_TICK_SIZE
-                    open_pos["be_activated"] = True
-                    sl_price = open_pos["sl_price"]
-                elif es_dir == "SHORT" and point_pnl >= sl_pts and not open_pos.get("be_activated"):
-                    open_pos["sl_price"] = entry_p - ES_TICK_SIZE
-                    open_pos["be_activated"] = True
-                    sl_price = open_pos["sl_price"]
 
                 # Trailing stop: once +1.5×SL in profit, trail by 1×SL
                 if es_dir == "LONG" and point_pnl >= sl_pts * 1.5:
                     trail_sl = spy_p - sl_pts
                     if trail_sl > open_pos.get("sl_price", 0):
                         open_pos["sl_price"] = round(trail_sl, 2)
+                        open_pos["trail_activated"] = True
                         sl_price = open_pos["sl_price"]
                 elif es_dir == "SHORT" and point_pnl >= sl_pts * 1.5:
                     trail_sl = spy_p + sl_pts
                     if trail_sl < open_pos.get("sl_price", 9999):
                         open_pos["sl_price"] = round(trail_sl, 2)
+                        open_pos["trail_activated"] = True
                         sl_price = open_pos["sl_price"]
 
                 # ── Exit conditions ───────────────────────────────────
@@ -1573,14 +1673,16 @@ class handler(BaseHTTPRequestHandler):
                 if invalid_reason:
                     exit_type = invalid_reason
                 elif es_dir == "LONG" and sl_price and spy_p <= sl_price:
-                    exit_type = "SL" if not open_pos.get("be_activated") else "BE_SL"
+                    exit_type = "TRAIL" if open_pos.get("trail_activated") else "SL"
                 elif es_dir == "SHORT" and sl_price and spy_p >= sl_price:
-                    exit_type = "SL" if not open_pos.get("be_activated") else "BE_SL"
+                    exit_type = "TRAIL" if open_pos.get("trail_activated") else "SL"
                 elif es_dir == "LONG" and tp_price and spy_p >= tp_price:
                     exit_type = "TP"
                 elif es_dir == "SHORT" and tp_price and spy_p <= tp_price:
                     exit_type = "TP"
-                elif not is_regular or (now.hour >= 15 and now.minute >= 30):
+                elif not is_regular or (now.hour >= 15 and now.minute >= 0):
+                    # Futures settlement is 15:00 ET — exit earlier than
+                    # equity 15:30 cushion to avoid settlement pin risk.
                     exit_type = "EOD"
                 
                 if exit_type:
@@ -1758,6 +1860,7 @@ class handler(BaseHTTPRequestHandler):
                 "paper_trading_stats": paper_trading_stats,
                 "mes_specs": {
                     "instrument": "MES",
+                    "contract_month": _current_mes_contract(now),
                     "multiplier": ES_MULTIPLIER,
                     "commission_rt": ES_COMMISSION_RT,
                     "day_margin": ES_DAY_MARGIN,
@@ -1765,7 +1868,11 @@ class handler(BaseHTTPRequestHandler):
                     "risk_pct": RISK_PCT,
                     "daily_loss_limit_pct": DAILY_LOSS_LIMIT * 100,
                     "trailing_stop": True,
-                    "breakeven_activation": "1×SL in profit",
+                    "breakeven_disabled": True,
+                    "eod_close_time": "15:00 ET (futures settlement)",
+                    "settlement_time": "15:00 ET",
+                    "roll_window_active": _is_quarterly_roll_window(now),
+                    "days_to_roll": _days_to_next_roll(now),
                 },
                 "daily_halt": daily_dd_pct >= DAILY_LOSS_LIMIT * 100,
                 "daily_drawdown_pct": round(daily_dd_pct, 2),

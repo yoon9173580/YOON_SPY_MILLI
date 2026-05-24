@@ -1381,13 +1381,22 @@ function renderBacktestSummary(py) {
     <!-- MES Contract Specs Row -->
     ${ms ? `
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      ${ms.contract_month ? `<span style="font-size:10px;background:#0c2b1f;border:1px solid #1e6b3f;border-radius:20px;padding:3px 10px;color:#3dd68c;font-weight:700">${ms.contract_month}</span>` : ''}
       <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#60a5fa">MES $${ms.multiplier}/pt</span>
       <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#60a5fa">Margin $${ms.day_margin}/contract</span>
-      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#f0a23a">Risk ${ms.risk_pct*100||12}%/trade</span>
+      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#f0a23a">Risk ${(ms.risk_pct*100).toFixed(1)||'1.5'}%/trade</span>
       <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#c084fc">Daily Halt ${ms.daily_loss_limit_pct||6}%</span>
-      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#3dd68c">Trailing Stop ✓</span>
+      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#3dd68c">Trail SL ✓</span>
+      ${ms.eod_close_time ? `<span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#8899cc">EOD ${ms.eod_close_time.split(' ')[0]}</span>` : ''}
+      ${ms.days_to_roll != null ? `<span style="font-size:10px;background:${ms.roll_window_active?'#3d1a1a':'#1a1a2e'};border:1px solid ${ms.roll_window_active?'#6b1b1b':'#2a2a3e'};border-radius:20px;padding:3px 10px;color:${ms.roll_window_active?'#ff7070':'#8899cc'};font-weight:${ms.roll_window_active?'700':'normal'}">${ms.roll_window_active?'⚠️ ROLL WEEK':`Roll in ${ms.days_to_roll}d`}</span>` : ''}
     </div>
     ` : ''}
+
+    <!-- Roll Window Warning -->
+    ${ms && ms.roll_window_active ? `
+    <div style="margin-top:8px;padding:8px 12px;background:#2a1a0a;border:1px solid #6b4a1b;border-radius:10px;color:#f0a23a;font-size:11px;text-align:center">
+      ⚠️ Quarterly roll window — new entries blocked. Liquidity migrating to next contract.
+    </div>` : ''}
 
     <!-- Daily Halt Alert -->
     ${py.daily_halt ? `
@@ -1403,6 +1412,7 @@ function getExitBadgeClass(exitType) {
   const t = exitType.toUpperCase();
   if (t === 'TP') return 'exit-tp';
   if (t === 'SL') return 'exit-sl';
+  if (t === 'TRAIL') return 'exit-tp';  // trailing stop closes are wins → green
   if (t === 'EOD' || t === 'STALE_EOD') return 'exit-eod';
   if (['SIGNAL','RISK','DIRECTION','TIME_WINDOW'].includes(t)) return 'exit-signal';
   return 'exit-other';
