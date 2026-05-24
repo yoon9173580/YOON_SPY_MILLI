@@ -178,6 +178,41 @@ def run_score_engine(now_et: datetime,
     # ── SIGNAL GRADE ────────────────────────────────────────────
     signal = determine_signal_grade(normalized)
 
+    # ── RUNAWAY TREND VETO FILTER ───────────────────────────────
+    is_runaway_trend = False
+    runaway_reason = ""
+
+    # 1. ADX Runaway check
+    adx_val = layers["regime"].get("details", {}).get("adx", {}).get("value")
+    if adx_val is not None and adx_val >= 35.0:
+        is_runaway_trend = True
+        runaway_reason = f"Extreme ADX ({adx_val:.1f} >= 35.0)"
+
+    # 2. RSI Runaway check
+    rsi_val = layers["technical"].get("rsi")
+    if rsi_val is not None and (rsi_val >= 80.0 or rsi_val <= 20.0):
+        is_runaway_trend = True
+        runaway_reason = f"Extreme RSI ({rsi_val:.1f})"
+
+    # 3. Synchronized Sector Breakout check
+    spy_ret = pcts.get("SPY", 0.0)
+    qqq_ret = pcts.get("QQQ", 0.0)
+    iwm_ret = pcts.get("IWM", 0.0)
+    if (spy_ret > 1.2 and qqq_ret > 1.2 and iwm_ret > 1.2) or (spy_ret < -1.2 and qqq_ret < -1.2 and iwm_ret < -1.2):
+        is_runaway_trend = True
+        runaway_reason = f"Synchronized Sector Breakout (SPY:{spy_ret:+.2f}%, QQQ:{qqq_ret:+.2f}%)"
+
+    # Apply Veto
+    if is_runaway_trend:
+        signal = {
+            "grade": "LOCKED",
+            "label": "RUNAWAY VETO",
+            "emoji": "⚠️",
+            "action": f"Vetoed: {runaway_reason} — Runway trend danger",
+            "color": "#f07178",
+        }
+        normalized = 0
+
     # ── RISK OVERRIDE ───────────────────────────────────────────
     # If risk check fails, override signal to NO SIGNAL
     if not layers["risk"]["passed"]:

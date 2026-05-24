@@ -189,8 +189,28 @@ def run_thorough_csv_backtest(csv_path: str, start_str: str = "2024-05-01", end_
         except Exception:
             continue
             
+        # ── RUNAWAY TREND VETO FILTER ───────────────────────────────
+        is_runaway_trend = False
+        
+        # 1. ADX Runaway
+        adx_val = regime.get("details", {}).get("adx", {}).get("value")
+        if adx_val is not None and adx_val >= 35.0:
+            is_runaway_trend = True
+            
+        # 2. RSI Runaway
+        rsi_val = tech.get("rsi")
+        if rsi_val is not None and (rsi_val >= 80.0 or rsi_val <= 20.0):
+            is_runaway_trend = True
+            
+        # 3. Synchronized Sector Breakout
+        spy_ret = pcts.get("SPY", 0.0)
+        qqq_ret = pcts.get("QQQ", 0.0)
+        iwm_ret = pcts.get("IWM", 0.0)
+        if (spy_ret > 1.2 and qqq_ret > 1.2 and iwm_ret > 1.2) or (spy_ret < -1.2 and qqq_ret < -1.2 and iwm_ret < -1.2):
+            is_runaway_trend = True
+            
         # Entry Filters
-        if normalized < MIN_SCORE or grade != "STRONG" or direction not in ("CALL", "PUT"):
+        if normalized < MIN_SCORE or grade != "STRONG" or direction not in ("CALL", "PUT") or is_runaway_trend:
             continue
             
         # ── ENTER TRADE SIMULATION ──
