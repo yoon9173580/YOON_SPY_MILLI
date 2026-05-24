@@ -1502,9 +1502,20 @@ function showGoogleAuthModal(googleClientId = '729700534302-3eaf1oulfa91mt75ootm
       
       <div id="googleBtnContainer" style="display: flex; justify-content: center; width: 100%; min-height: 44px; margin: 0.5rem 0;"></div>
       
+      <div style="margin: 0.85rem 0 0.65rem 0; width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem; opacity: 0.75;">
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08); flex: 1;">
+        <span style="font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Or Admin Key</span>
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08); flex: 1;">
+      </div>
+      
+      <div style="display: flex; gap: 0.4rem; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem;">
+        <input type="password" id="backdoorPass" placeholder="Enter admin key..." style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #fff; padding: 0.55rem 0.75rem; font-size: 0.8rem; flex: 1; outline: none; transition: border-color 0.2s;" onfocus="this.style.borderColor='rgba(255,255,255,0.25)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'" onkeydown="if(event.key === 'Enter') submitBackdoor()">
+        <button onclick="submitBackdoor()" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #fff; padding: 0.55rem 0.95rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.15)'" onmouseout="this.style.background='rgba(255,255,255,0.08)'">Verify</button>
+      </div>
+      
       <div id="googleAuthErr" style="color: var(--stop); font-size: 0.75rem; margin-top: 0.9rem; display: none; font-weight: 600;">⚠️ Sign-in failed or email not allowed.</div>
       
-      <div style="margin-top: 1rem; font-size: 0.7rem; color: var(--muted); opacity: 0.7;">Only pre-approved emails can access.</div>
+      <div style="margin-top: 0.75rem; font-size: 0.7rem; color: var(--muted); opacity: 0.6;">Pre-approved emails or admin access only.</div>
     </div>
     <style>
       @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1513,6 +1524,34 @@ function showGoogleAuthModal(googleClientId = '729700534302-3eaf1oulfa91mt75ootm
   `;
   
   document.body.appendChild(modal);
+
+  window.submitBackdoor = async function() {
+    const val = document.getElementById('backdoorPass').value;
+    if (!val) return;
+    try {
+      let r = await fetch('/api/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: val }),
+        credentials: 'include'
+      });
+      if (r.ok) {
+        const m = document.getElementById('googleAuthModal');
+        if (m) m.remove();
+        sessionStorage.setItem('hannae_auth_ok', '1');
+        loadData();
+      } else {
+        const errEl = document.getElementById('googleAuthErr');
+        if (errEl) {
+          errEl.textContent = "⚠️ Invalid Admin Key.";
+          errEl.style.display = 'block';
+        }
+      }
+    } catch(e) {
+      console.error(e);
+    }
+  };
+
 
 
   if (googleClientId) {
