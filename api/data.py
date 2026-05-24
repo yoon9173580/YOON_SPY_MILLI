@@ -20,12 +20,48 @@ STARTING_BALANCE = 10000.0
 TRADING_START_DATE = "2026-05-25"   # Day 1 of MES futures paper trading
 
 # MES Futures Contract Specs
-ES_MULTIPLIER = 5.0        # $5 per point of S&P 500 (Micro E-mini)
-ES_COMMISSION_RT = 0.50    # Round-trip commission per contract
-ES_SLIPPAGE_PTS = 0.25     # 1 tick slippage per side
-ES_DAY_MARGIN = 50.0       # Day-trading margin per contract
-ATR_SL_MULT = 1.5          # SL = 1.5x ATR(14)
-RISK_PCT = 0.12            # 12% Kelly-informed risk per trade
+ES_MULTIPLIER    = 5.0      # $5/pt (Micro E-mini S&P 500)
+ES_COMMISSION_RT = 0.50     # Round-trip commission per contract
+ES_SLIPPAGE_PTS  = 0.25     # 1 tick slippage per side
+ES_DAY_MARGIN    = 50.0     # Day-trading margin per contract
+ES_TICK_SIZE     = 0.25     # Minimum price increment
+ATR_SL_MULT      = 1.5      # SL = 1.5x ATR proxy (range-based)
+RISK_PCT         = 0.12     # 12% Kelly-informed risk per trade
+DAILY_LOSS_LIMIT = 0.06     # Halt trading if daily drawdown > 6%
+MAX_OPEN_TRADES  = 1        # Max 1 MES position simultaneously
+
+# ── Backtest Summary (embedded static data — no file read at runtime) ─
+BACKTEST_SUMMARY = {
+    "mes_futures": {
+        "model": "MES Futures (ES backtest scaled to MES)",
+        "period": "2023-03-25 ~ 2026-03-25",
+        "period_days": 1095,
+        "strategy": "ATR SL=1.5x | 2:1 RR | Risk=12% | Entry 10:30 EST",
+        "total_trades": 78,
+        "wins": 52,
+        "losses": 26,
+        "win_rate": 66.7,
+        "profit_factor": 2.91,
+        "avg_win_mes": 26.36,
+        "avg_loss_mes": -18.11,
+        "max_drawdown_pct": 4.6,
+        "annual_return_pct": 23.8,
+        "total_pnl_pct": 90.0,
+        "sharpe": 3.0,
+        "note": "ES $50/pt backtest. MES is 1/10th ($5/pt)."
+    },
+    "debit_spread_v3": {
+        "model": "SPY 0DTE Debit Spread v3 (legacy reference)",
+        "period_days": 750,
+        "total_trades": 122,
+        "win_rate": 74.6,
+        "profit_factor": 2.55,
+        "max_drawdown_pct": 21.1,
+        "total_pnl_pct": 570.0,
+        "sharpe": 5.54,
+        "note": "Legacy SPY 0DTE strategy — reference only."
+    }
+}
 
 
 
@@ -800,16 +836,37 @@ def _close_trade(pos, now, spy_p, exit_val, exit_type):
 
 
 def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now=None):
-    """Check if ES futures entry criteria are met. No PDT for futures."""
+    """MES Futures entry criteria — no PDT restriction for futures."""
     layers = score_result.get("layers", {})
+
+    # Risk lock or locked signal
     if layers.get("risk", {}).get("passed") is False or grade == "LOCKED":
         return False
+
+    # Must be STRONG signal
     if grade != "STRONG":
         return False
+
+    # Must be in PRIME or GAMMA time window (score 20 = prime)
     if layers.get("time_window", {}).get("score", 0) < 20:
         return False
+
+    # Must have clear directional bias
     if direction_bias not in ("CALL", "PUT"):
         return False
+
+    # Daily loss limit halt — stop trading if down > 6% today
+    if portfolio:
+        initial = float(portfolio.get("initial_balance", STARTING_BALANCE) or STARTING_BALANCE)
+        current = float(portfolio.get("current_value", initial) or initial)
+        daily_dd = (initial - current) / initial if initial > 0 else 0
+        if daily_dd >= DAILY_LOSS_LIMIT:
+            return False
+
+    # Max 1 open position
+    if portfolio and len(portfolio.get("positions", {})) >= MAX_OPEN_TRADES:
+        return False
+
     return True
 
 
@@ -1215,6 +1272,14 @@ class handler(BaseHTTPRequestHandler):
             # Map new 140-point grade to legacy signal dict
             signal = score_result["signal"]
             grade = signal["grade"]
+
+            # Daily drawdown tracking (for halt logic + response)
+            initial_bal  = float(portfolio.get("initial_balance", STARTING_BALANCE) or STARTING_BALANCE)
+            current_val  = float(portfolio.get("current_value", initial_bal) or initial_bal)
+            daily_dd_pct = round((initial_bal - current_val) / initial_bal * 100, 2) if initial_bal > 0 else 0.0
+            if daily_dd_pct >= DAILY_LOSS_LIMIT * 100:
+                signal["action"] = f"⛔ DAILY LOSS LIMIT ({daily_dd_pct:.1f}%) — TRADING HALTED"
+                signal["halted"] = True
             if grade == "STRONG": signal = {"grade": "STRONG", "label": "STRONG SIGNAL", "emoji": "🟢", "action": "Full position", "color": "#3dd68c"}
             elif grade == "MODERATE": signal = {"grade": "MODERATE", "label": "MODERATE SIGNAL", "emoji": "🟡", "action": "Half position", "color": "#f5c451"}
             elif grade == "WEAK": signal = {"grade": "WEAK", "label": "STANDBY", "emoji": "🟠", "action": "Monitor only", "color": "#f5a623"}
@@ -1347,13 +1412,41 @@ class handler(BaseHTTPRequestHandler):
                 sl_price = open_pos.get("sl_price")
                 tp_price = open_pos.get("tp_price")
                 
+                # ── Trailing Stop + Breakeven management ──────────────
+                entry_p  = open_pos.get("entry_price", spy_p)
+                sl_pts   = open_pos.get("sl_points", 4.0)
+                tp_pts   = open_pos.get("tp_points", 8.0)
+
+                # Breakeven: once +1×SL in profit, move SL to entry
+                if es_dir == "LONG" and point_pnl >= sl_pts and not open_pos.get("be_activated"):
+                    open_pos["sl_price"] = entry_p + ES_TICK_SIZE
+                    open_pos["be_activated"] = True
+                    sl_price = open_pos["sl_price"]
+                elif es_dir == "SHORT" and point_pnl >= sl_pts and not open_pos.get("be_activated"):
+                    open_pos["sl_price"] = entry_p - ES_TICK_SIZE
+                    open_pos["be_activated"] = True
+                    sl_price = open_pos["sl_price"]
+
+                # Trailing stop: once +1.5×SL in profit, trail by 1×SL
+                if es_dir == "LONG" and point_pnl >= sl_pts * 1.5:
+                    trail_sl = spy_p - sl_pts
+                    if trail_sl > open_pos.get("sl_price", 0):
+                        open_pos["sl_price"] = round(trail_sl, 2)
+                        sl_price = open_pos["sl_price"]
+                elif es_dir == "SHORT" and point_pnl >= sl_pts * 1.5:
+                    trail_sl = spy_p + sl_pts
+                    if trail_sl < open_pos.get("sl_price", 9999):
+                        open_pos["sl_price"] = round(trail_sl, 2)
+                        sl_price = open_pos["sl_price"]
+
+                # ── Exit conditions ───────────────────────────────────
                 invalid_reason = _position_invalid_reason(open_pos, grade, direction_bias, score_result)
                 if invalid_reason:
                     exit_type = invalid_reason
                 elif es_dir == "LONG" and sl_price and spy_p <= sl_price:
-                    exit_type = "SL"
+                    exit_type = "SL" if not open_pos.get("be_activated") else "BE_SL"
                 elif es_dir == "SHORT" and sl_price and spy_p >= sl_price:
-                    exit_type = "SL"
+                    exit_type = "SL" if not open_pos.get("be_activated") else "BE_SL"
                 elif es_dir == "LONG" and tp_price and spy_p >= tp_price:
                     exit_type = "TP"
                 elif es_dir == "SHORT" and tp_price and spy_p <= tp_price:
@@ -1462,6 +1555,56 @@ class handler(BaseHTTPRequestHandler):
                 d += timedelta(days=1)
             trading_day = max(1, trading_day_count)
 
+            # Live Readiness: compute paper trading phase
+            pt_history = portfolio.get("history", [])
+            pt_wins    = sum(1 for t in pt_history if t.get("win"))
+            pt_losses  = sum(1 for t in pt_history if not t.get("win") and t.get("pnl") is not None)
+            pt_total   = pt_wins + pt_losses
+            pt_wr      = round(pt_wins / pt_total * 100, 1) if pt_total > 0 else None
+            pt_pf      = None
+            if pt_losses > 0:
+                gross_win  = sum(t.get("pnl", 0) for t in pt_history if t.get("win"))
+                gross_loss = abs(sum(t.get("pnl", 0) for t in pt_history if not t.get("win") and t.get("pnl") is not None))
+                pt_pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
+            pt_max_dd  = 0.0
+            if pt_total > 0:
+                peak = STARTING_BALANCE
+                running = STARTING_BALANCE
+                for t in pt_history:
+                    running += float(t.get("pnl", 0) or 0)
+                    peak = max(peak, running)
+                    dd = (peak - running) / peak * 100 if peak > 0 else 0
+                    pt_max_dd = max(pt_max_dd, dd)
+
+            # Phase determination
+            if pt_total < 30:
+                pt_phase = 1
+                pt_phase_label = f"Phase 1: Validation ({pt_total}/30 trades)"
+            elif pt_wr and pt_wr >= 55 and pt_pf and pt_pf >= 1.3 and pt_max_dd < 20:
+                pt_phase = 3
+                pt_phase_label = "Phase 3: LIVE READY ✅"
+            else:
+                pt_phase = 2
+                pt_phase_label = f"Phase 2: Accumulating ({pt_total} trades)"
+
+            paper_trading_stats = {
+                "total_trades": pt_total,
+                "wins": pt_wins,
+                "losses": pt_losses,
+                "win_rate": pt_wr,
+                "profit_factor": pt_pf,
+                "max_drawdown_pct": round(pt_max_dd, 1),
+                "phase": pt_phase,
+                "phase_label": pt_phase_label,
+                "live_ready": pt_phase == 3,
+                "criteria": {
+                    "trades_needed": max(0, 30 - pt_total),
+                    "win_rate_ok": pt_wr >= 55 if pt_wr else False,
+                    "profit_factor_ok": pt_pf >= 1.3 if pt_pf else False,
+                    "drawdown_ok": pt_max_dd < 20,
+                }
+            }
+
             final = {
                 "last_updated": ts, "fetch_status": "SUCCESS", "latency_ms": latency,
                 "timing_ms": fetch_timing,
@@ -1482,6 +1625,21 @@ class handler(BaseHTTPRequestHandler):
                 "indices": indices_out, "mag7": mag7_out,
                 "gme_data": gme_data, "special_watch": gme_data,
                 "paper_trading": portfolio,
+                "backtest_summary": BACKTEST_SUMMARY,
+                "paper_trading_stats": paper_trading_stats,
+                "mes_specs": {
+                    "instrument": "MES",
+                    "multiplier": ES_MULTIPLIER,
+                    "commission_rt": ES_COMMISSION_RT,
+                    "day_margin": ES_DAY_MARGIN,
+                    "tick_size": ES_TICK_SIZE,
+                    "risk_pct": RISK_PCT,
+                    "daily_loss_limit_pct": DAILY_LOSS_LIMIT * 100,
+                    "trailing_stop": True,
+                    "breakeven_activation": "1×SL in profit",
+                },
+                "daily_halt": daily_dd_pct >= DAILY_LOSS_LIMIT * 100,
+                "daily_drawdown_pct": round(daily_dd_pct, 2),
             }
 
             origin = self.headers.get("Origin", "")

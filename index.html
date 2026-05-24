@@ -517,6 +517,12 @@ body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%
   </div>
 
 
+  <!-- Backtest & Live Paper Trading Stats Panel -->
+  <div id="backtestPanel" style="margin:0.8rem 0;border:1px solid rgba(91,140,255,0.2);border-radius:14px;padding:14px;background:linear-gradient(135deg,rgba(12,20,40,0.95),rgba(18,24,42,0.9))">
+    <div style="font-size:10px;color:rgba(96,165,250,0.8);text-transform:uppercase;letter-spacing:.12em;font-weight:700;margin-bottom:10px">📈 Backtest Results & Live Readiness</div>
+    <div style="color:var(--muted);font-size:12px">Loading...</div>
+  </div>
+
   <!-- Paper Trading -->
   <div class="pt-box" id="paperTradingWidget" style="display:none">
     <div class="pt-header">
@@ -971,6 +977,9 @@ function render(py) {
   renderGrid('gmeGrid', py.gme_data || py.special_watch);
 
   // Paper Trading
+  // Render backtest + live paper trading stats panel
+  renderBacktestSummary(py);
+
   if (py.paper_trading) {
     document.getElementById('paperTradingWidget').style.display = 'block';
     const pt = py.paper_trading;
@@ -1286,6 +1295,97 @@ function render(py) {
     renderTradeList(hist, maxAbsPnl, 'all');
   }
 }
+
+// ── Backtest Summary Panel ─────────────────────────────────────────────────
+function renderBacktestSummary(py) {
+  const el = document.getElementById('backtestPanel');
+  if (!el) return;
+  const bs = py.backtest_summary;
+  const ps = py.paper_trading_stats;
+  const ms = py.mes_specs;
+  if (!bs) return;
+
+  const m = bs.mes_futures;
+  const phaseBg = ps ? (ps.phase === 3 ? '#0c2b1f' : ps.phase === 2 ? '#2a1f0a' : '#141824') : '#141824';
+  const phaseColor = ps ? (ps.phase === 3 ? '#3dd68c' : ps.phase === 2 ? '#f0a23a' : '#8899cc') : '#8899cc';
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <!-- MES Backtest Card -->
+      <div style="background:#0c1428;border:1px solid #1a3060;border-radius:12px;padding:12px">
+        <div style="font-size:10px;color:#60a5fa;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px">📊 MES Backtest (3yr)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
+          <div style="background:#0f1a2e;border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">WIN RATE</div>
+            <div style="color:#3dd68c;font-weight:700;font-size:16px">${m.win_rate}%</div>
+          </div>
+          <div style="background:#0f1a2e;border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">PROFIT FACTOR</div>
+            <div style="color:#60a5fa;font-weight:700;font-size:16px">${m.profit_factor}</div>
+          </div>
+          <div style="background:#0f1a2e;border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">MAX DD</div>
+            <div style="color:#f0a23a;font-weight:700;font-size:16px">${m.max_drawdown_pct}%</div>
+          </div>
+          <div style="background:#0f1a2e;border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">ANNUAL</div>
+            <div style="color:#c084fc;font-weight:700;font-size:16px">${m.annual_return_pct}%</div>
+          </div>
+        </div>
+        <div style="margin-top:7px;font-size:10px;color:#334">
+          <span style="color:#3dd68c">▲ Avg Win $${m.avg_win_mes?.toFixed(2)||'-'}</span>
+          <span style="color:#ff7070;margin-left:8px">▼ Avg Loss $${Math.abs(m.avg_loss_mes||0).toFixed(2)}</span>
+        </div>
+        <div style="margin-top:4px;font-size:9px;color:#445">${m.total_trades} trades | ${m.period}</div>
+      </div>
+
+      <!-- Live Paper Trading Card -->
+      <div style="background:${phaseBg};border:1px solid #1e2130;border-radius:12px;padding:12px">
+        <div style="font-size:10px;color:${phaseColor};font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px">🎯 Live Paper Trading</div>
+        ${ps ? `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
+          <div style="background:rgba(0,0,0,.3);border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">TRADES</div>
+            <div style="color:${phaseColor};font-weight:700;font-size:16px">${ps.total_trades}/30</div>
+          </div>
+          <div style="background:rgba(0,0,0,.3);border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">WIN RATE</div>
+            <div style="color:${(ps.win_rate||0)>=55?'#3dd68c':'#ff7070'};font-weight:700;font-size:16px">${ps.win_rate||'—'}%</div>
+          </div>
+          <div style="background:rgba(0,0,0,.3);border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">PROF. FACTOR</div>
+            <div style="color:${(ps.profit_factor||0)>=1.3?'#3dd68c':'#ff7070'};font-weight:700;font-size:16px">${ps.profit_factor||'—'}</div>
+          </div>
+          <div style="background:rgba(0,0,0,.3);border-radius:7px;padding:7px;text-align:center">
+            <div style="color:#555;font-size:9px;margin-bottom:2px">MAX DD</div>
+            <div style="color:${(ps.max_drawdown_pct||0)<20?'#3dd68c':'#ff7070'};font-weight:700;font-size:16px">${ps.max_drawdown_pct}%</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;padding:6px 8px;background:rgba(0,0,0,.3);border-radius:8px;font-size:10px;color:${phaseColor};font-weight:600;text-align:center">${ps.phase_label}</div>
+        ${ps.live_ready ? '<div style="margin-top:4px;font-size:9px;color:#3dd68c;text-align:center">✅ All criteria met — consider live trading</div>' : ''}
+        ` : '<div style="color:#555;font-size:11px;text-align:center;margin-top:20px">No trades yet</div>'}
+      </div>
+    </div>
+
+    <!-- MES Contract Specs Row -->
+    ${ms ? `
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#60a5fa">MES $${ms.multiplier}/pt</span>
+      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#60a5fa">Margin $${ms.day_margin}/contract</span>
+      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#f0a23a">Risk ${ms.risk_pct*100||12}%/trade</span>
+      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#c084fc">Daily Halt ${ms.daily_loss_limit_pct||6}%</span>
+      <span style="font-size:10px;background:#0f1a2e;border:1px solid #1a3060;border-radius:20px;padding:3px 10px;color:#3dd68c">Trailing Stop ✓</span>
+    </div>
+    ` : ''}
+
+    <!-- Daily Halt Alert -->
+    ${py.daily_halt ? `
+    <div style="margin-top:8px;padding:10px 14px;background:#3d1a1a;border:1px solid #6b1b1b;border-radius:10px;color:#ff7070;font-size:12px;font-weight:600;text-align:center">
+      ⛔ DAILY LOSS LIMIT HIT (${py.daily_drawdown_pct}%) — TRADING HALTED FOR TODAY
+    </div>` : ''}
+  `;
+}
+
 
 function getExitBadgeClass(exitType) {
   if (!exitType) return 'exit-other';
