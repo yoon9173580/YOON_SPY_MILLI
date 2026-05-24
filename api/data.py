@@ -332,12 +332,16 @@ def _get_0dte_option_chain(spy_price, vix_price):
     if not spy_price:
         return None
         
-    # Optimization: Only fetch real options during extended market hours
-    # (pre-market 8:30~, regular, after-hours ~17:00). Skip deep night / weekends.
+    # Optimization: Only fetch real (expensive) options data during regular trading hours.
+    # During pre-market and after-hours, fall back to Black-Scholes estimate to save API costs.
     now_ny = datetime.now(NY)
     status = get_market_status(now_ny)
-    if status == 'closed':
+    if status != 'regular':
         return None
+    # Explicit opt-in for the expensive Options Market Data API
+    if os.getenv("ENABLE_OPTIONS_API", "false").lower() != "true":
+        return None
+
     api_key = ALPACA_HEADERS.get("APCA-API-KEY-ID", "")
     api_secret = ALPACA_HEADERS.get("APCA-API-SECRET-KEY", "")
     if not api_key or not api_secret:
