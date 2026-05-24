@@ -272,10 +272,17 @@ def run_score_engine(now_et: datetime,
 
     # ── DIRECTION BIAS (Regime-Aware Strategy Switching) ────────
     raw_bias = layers["technical"].get("direction_bias", "NEUTRAL")
+    of_dir = layers["options_flow"].get("direction", "NEUTRAL") if of_live else "NEUTRAL"
 
     if is_trending:
-        # Trend following: take the technical layer's vote directly.
-        direction_bias = raw_bias
+        # Trend following: technical layer drives. Options flow is a
+        # *confirmation gate* — if it actively disagrees with technical
+        # (LONG vs SHORT), de-confidence to NEUTRAL. Agreement or
+        # NEUTRAL options flow leaves technical's call intact.
+        if of_live and raw_bias in ("LONG", "SHORT") and of_dir in ("LONG", "SHORT") and of_dir != raw_bias:
+            direction_bias = "NEUTRAL"
+        else:
+            direction_bias = raw_bias
     else:
         # Mean reversion: ignore momentum (raw_bias) and require an actual
         # extreme — naive inversion of trend signals has no statistical edge.
@@ -292,6 +299,9 @@ def run_score_engine(now_et: datetime,
         elif band_region == "SHORT_FADE":
             direction_bias = "SHORT"  # above 2SD — mean revert down
         else:
+            direction_bias = "NEUTRAL"
+        # In counter-trend mode, options flow disagreement also disqualifies.
+        if of_live and direction_bias in ("LONG", "SHORT") and of_dir in ("LONG", "SHORT") and of_dir != direction_bias:
             direction_bias = "NEUTRAL"
 
     # ── BUILD FINAL OUTPUT ──────────────────────────────────────

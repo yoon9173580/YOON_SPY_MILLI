@@ -1,0 +1,32 @@
+{
+  "model": "MES Filtered Backtest v5 (post-fix algo simulation, real 3yr)",
+  "period": "2023-03-25 ~ 2026-03-25",
+  "period_days": 1095,
+  "strategy": "ATR SL=1.5x | Score 90-100 | SHORT\u226593 | VIX<25 | Macro/Roll filtered",
+  "filters_applied": {
+    "score_out_of_range": 16,
+    "short_low_score": 3,
+    "macro": 6,
+    "roll": 2,
+    "vix_high": 0
+  },
+  "original_total_trades": 78,
+  "total_trades": 51,
+  "wins": 38,
+  "losses": 13,
+  "win_rate": 74.5,
+  "profit_factor": 4.04,
+  "avg_win": 259.05,
+  "avg_loss": -187.41,
+  "rr_realized": 1.38,
+  "max_drawdown_pct": 4.89,
+  "annual_return_pct": 24.7,
+  "total_pnl": 7407.52,
+  "vs_original": {
+    "trade_count_change": "-27 (-35%)",
+    "wr_change_pp": 7.8,
+    "pf_change": 1.13,
+    "ann_return_change_pp": 0.9
+  },
+  "status": "FILTERED_PROJECTION"
+}
