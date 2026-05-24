@@ -1630,11 +1630,11 @@ async function loadData() {
       const marketStatus = data.market_status || 'regular';
 
       if (marketStatus === 'regular') {
-        startDataPolling(15000);           // 15s during core hours
+        startDataPolling(15000);                    // 15s during core trading hours
       } else if (marketStatus === 'pre_market' || marketStatus === 'after_hours') {
-        startDataPolling(20000);           // 20s during 1h extended hours (slightly gentler)
+        startDataPolling(5 * 60 * 1000);            // 5 minutes during extended hours (cost priority - A)
       } else {
-        // Fully closed (night, weekends, holidays) → minimal polling
+        // Fully closed → stop auto polling completely
         stopDataPolling();
       }
 
@@ -1649,7 +1649,7 @@ async function loadData() {
   if (lastMarketStatus === 'regular') {
     startDataPolling(15000);
   } else if (lastMarketStatus === 'pre_market' || lastMarketStatus === 'after_hours') {
-    startDataPolling(20000);
+    startDataPolling(5 * 60 * 1000);   // 5 min in extended (cost priority)
   }
   // else: closed → do not auto-poll
 }
