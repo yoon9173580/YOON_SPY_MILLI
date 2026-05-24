@@ -17,6 +17,7 @@ try:
     import sys, os
     sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
     from engines.score_engine import run_score_engine
+    from lib.feature_flags import all_flags as _feature_flags_snapshot
 except Exception as e:
     import traceback
     INIT_ERROR = traceback.format_exc()
@@ -117,9 +118,21 @@ STOCK_SYMS = ["SPY", "QQQ", "DIA", "IWM"]
 MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
 GME_STOCK = ["GME"]
 ALL_STOCKS = STOCK_SYMS + MAG7 + GME_STOCK
+
+# Micro-futures proxy mapping. SPY=MES, QQQ=MNQ, IWM=M2K, DIA=MYM.
+# Used by dashboard to surface all 4 micro contracts side-by-side and by
+# multi-instrument expansion (currently dashboard-only — execution still MES).
+FUTURES_PROXIES = {
+    "MES": {"proxy": "SPY", "multiplier": 5.0,  "name": "Micro S&P 500"},
+    "MNQ": {"proxy": "QQQ", "multiplier": 2.0,  "name": "Micro Nasdaq-100"},
+    "M2K": {"proxy": "IWM", "multiplier": 5.0,  "name": "Micro Russell 2000"},
+    "MYM": {"proxy": "DIA", "multiplier": 0.5,  "name": "Micro Dow Jones"},
+}
 FLASHALPHA_API_KEY = os.getenv("FLASHALPHA_API_KEY", "")
 FLASHALPHA_API_URL = "https://lab.flashalpha.com/v1"
 _VIX_CACHE = {"at": 0.0, "vix": 18.0, "vix3m": None}
+# Rolling VIX baseline (지수 이동 평균) — 스파이크 감지용
+_VIX_BASELINE = {"ema": None, "alpha": 0.05}
 VIX_CACHE_SEC = int(os.getenv("VIX_CACHE_SEC", "45"))
 YAHOO_UA = "Mozilla/5.0 (compatible; ESFutures/2.0)"
 
@@ -198,7 +211,38 @@ def _vix_fallback():
         pass
 
     _VIX_CACHE.update({"at": now, "vix": vix_p, "vix3m": vix3m_p})
+    # Update EWMA baseline for tail-risk detection
+    if vix_p is not None:
+        if _VIX_BASELINE["ema"] is None:
+            _VIX_BASELINE["ema"] = vix_p
+        else:
+            a = _VIX_BASELINE["alpha"]
+            _VIX_BASELINE["ema"] = a * vix_p + (1 - a) * _VIX_BASELINE["ema"]
     return vix_p, vix3m_p
+
+
+def _tail_risk_status(vix_now: float) -> dict:
+    """VIX 스파이크 감지 — EWMA 대비 현재 VIX 편차."""
+    baseline = _VIX_BASELINE["ema"]
+    if vix_now is None or baseline is None or baseline <= 0:
+        return {"status": "UNKNOWN", "vix": vix_now, "baseline": baseline,
+                "spike_pct": 0.0, "detail": "Insufficient VIX history"}
+    spike = (vix_now - baseline) / baseline * 100.0
+    if spike >= 40:
+        status, detail = "CRITICAL", f"VIX spike {spike:+.1f}% vs EWMA — panic regime"
+    elif spike >= 20:
+        status, detail = "WARNING", f"VIX spike {spike:+.1f}% vs EWMA — elevated fear"
+    elif spike >= 10:
+        status, detail = "ELEVATED", f"VIX {spike:+.1f}% above EWMA"
+    else:
+        status, detail = "NORMAL", f"VIX within {spike:+.1f}% of EWMA"
+    return {
+        "status": status,
+        "vix": round(vix_now, 2),
+        "baseline": round(baseline, 2),
+        "spike_pct": round(spike, 1),
+        "detail": detail,
+    }
 
 
 def _flashalpha_spy_summary():
@@ -1247,6 +1291,66 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": "Internal Server Error"}).encode('utf-8'))
 
+    def _handle_stream(self):
+        """Server-Sent Events stream. 1 event every ~5s for ~55s, then closes.
+
+        Client should reconnect — EventSource does this automatically.
+        Vercel Pro: 60s execution limit. Free: 10s, so SSE is degraded
+        but still 2 frames per call.
+        """
+        import time as _t
+        origin = self.headers.get("Origin", "")
+        # Auth check (cookie required for streaming too)
+        cookie_header = self.headers.get("Cookie", "")
+        if "access_token=valid" not in cookie_header:
+            self.send_response(401)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', origin if is_origin_allowed(origin) else 'https://hannaealgo.vercel.app')
+            self.end_headers()
+            self.wfile.write(b'{"error":"Unauthorized"}')
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'keep-alive')
+        self.send_header('X-Accel-Buffering', 'no')  # nginx/Vercel: disable buffering
+        if is_origin_allowed(origin):
+            self.send_header('Access-Control-Allow-Origin', origin)
+        else:
+            self.send_header('Access-Control-Allow-Origin', 'https://hannaealgo.vercel.app')
+        self.send_header('Access-Control-Allow-Credentials', 'true')
+        self.end_headers()
+
+        # Stream loop — bounded by deadline to fit Vercel limit
+        deadline = _t.time() + 55  # 55s budget
+        interval = 5               # 5s per event
+        frames_sent = 0
+        try:
+            while _t.time() < deadline:
+                # Build minimal status payload (no full data dump per frame)
+                try:
+                    now = datetime.now(NY)
+                    bundle = _fetch_market_bundle(ALL_STOCKS)
+                    vix_p, _ = bundle.get("vix", (18.0, None))
+                    status_payload = {
+                        "ts": now.strftime("%H:%M:%S"),
+                        "vix": vix_p,
+                        "frame": frames_sent,
+                    }
+                except Exception as e:
+                    status_payload = {"error": str(e), "frame": frames_sent}
+                msg = f"event: tick\ndata: {json.dumps(status_payload)}\n\n"
+                try:
+                    self.wfile.write(msg.encode('utf-8'))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return  # client disconnected
+                frames_sent += 1
+                _t.sleep(interval)
+        except Exception:
+            return
+
     def do_GET(self):
         if INIT_ERROR:
             self.send_response(500)
@@ -1255,6 +1359,11 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(f"INIT ERROR:\n{INIT_ERROR}".encode('utf-8'))
             return
+
+        # SSE endpoint — streams up to ~55s within Vercel free-tier limit.
+        # Falls back to single payload + close when SSE handshake fails.
+        if self.path.startswith("/api/stream") or self.path.startswith("/api/data?stream=1"):
+            return self._handle_stream()
 
         # Resolve client IP & Check Rate limit
         ip = self.headers.get("x-forwarded-for", "127.0.0.1").split(',')[0].strip()
@@ -1641,6 +1750,20 @@ class handler(BaseHTTPRequestHandler):
                 s = snaps.get(sym, {})
                 mag7_out[sym] = {"price": _snap_price(s), "pct": _pct(_snap_price(s), _snap_prev_close(s) or 1)}
 
+            # Multi-instrument futures dashboard (data-only; execution still MES)
+            futures_out = {}
+            for fut, meta in FUTURES_PROXIES.items():
+                s = snaps.get(meta["proxy"], {})
+                px = _snap_price(s)
+                pct = _pct(px, _snap_prev_close(s) or 1)
+                futures_out[fut] = {
+                    "proxy_etf": meta["proxy"],
+                    "name": meta["name"],
+                    "multiplier": meta["multiplier"],
+                    "proxy_price": px,
+                    "proxy_pct": pct,
+                }
+
             gme_data = {}
             for sym in GME_STOCK:
                 s = snaps.get(sym, {})
@@ -1727,6 +1850,27 @@ class handler(BaseHTTPRequestHandler):
                 }
             }
 
+            # ── Portfolio Heat (총 노출 위험) ──────────────────────
+            # 현재 오픈된 모든 포지션의 잠재 손실(SL까지) 합 / 계좌 잔고.
+            # 다중 포지션 환경에서 단일 트레이드 1.5% × N으로 누적 위험이
+            # 6% 일간 한도를 넘는 일을 막는다.
+            open_positions = list((portfolio.get("positions") or {}).values())
+            heat_risk_usd = 0.0
+            for p in open_positions:
+                entry = p.get("entry_price") or 0
+                sl    = p.get("sl_price") or entry
+                contracts = p.get("contracts", 0) or 0
+                heat_risk_usd += abs(entry - sl) * ES_MULTIPLIER * contracts
+            heat_pct = (heat_risk_usd / current_val * 100) if current_val > 0 else 0.0
+            heat_status = "OK" if heat_pct < 3.0 else ("WARNING" if heat_pct < 5.0 else "DANGER")
+            portfolio_heat = {
+                "open_positions": len(open_positions),
+                "total_risk_usd": round(heat_risk_usd, 2),
+                "heat_pct": round(heat_pct, 2),
+                "status": heat_status,
+                "limit_pct": 5.0,
+            }
+
             # Adaptive next-poll hint — frontend uses this instead of a
             # hardcoded 10s interval. Vercel Python serverless can't hold a
             # WebSocket, so we lean on shorter polls during active windows
@@ -1758,9 +1902,13 @@ class handler(BaseHTTPRequestHandler):
                 "rules": rules, "alert_mode": "ON SIGNAL CHANGE",
                 "indices": indices_out, "mag7": mag7_out,
                 "gme_data": gme_data, "special_watch": gme_data,
+                "futures_multi": futures_out,
                 "paper_trading": portfolio,
                 "backtest_summary": BACKTEST_SUMMARY,
                 "paper_trading_stats": paper_trading_stats,
+                "portfolio_heat": portfolio_heat,
+                "tail_risk": _tail_risk_status(vix_p),
+                "feature_flags": _feature_flags_snapshot(),
                 "mes_specs": {
                     "instrument": "MES",
                     "contract_month": _current_mes_contract(now),

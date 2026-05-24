@@ -36,19 +36,17 @@ from api.data import (
 )
 from engines.score_engine import run_score_engine
 from engines.ml_weights import feedback_trade_result
+from lib.brokers import get_broker
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("AutoTrader")
 
 load_dotenv()
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY") or os.getenv("APCA_API_KEY_ID")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY") or os.getenv("APCA_API_SECRET_KEY")
-ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
 
-HEADERS = {
-    "APCA-API-KEY-ID": ALPACA_API_KEY or "",
-    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY or "",
-}
+# Broker is selected by env var BROKER (alpaca / tradovate / dryrun).
+# Defaults to Alpaca paper for back-compat. Switch to tradovate for real
+# MES/ES futures once TRADOVATE_* env vars are set.
+BROKER = get_broker()
 
 STATE_FILE = "data_cache/bot_state.json"
 NY = pytz.timezone("America/New_York")
@@ -71,44 +69,22 @@ def save_bot_state(state):
 
 
 def get_open_positions():
-    """Return Alpaca open positions as a list (empty on failure)."""
-    try:
-        r = requests.get(f"{ALPACA_BASE_URL}/v2/positions", headers=HEADERS, timeout=8)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        logger.error(f"Failed to get positions: {e}")
-        return []
+    """Open positions from the active broker (empty on failure)."""
+    return BROKER.get_open_positions()
 
 
 def get_account_equity():
-    try:
-        r = requests.get(f"{ALPACA_BASE_URL}/v2/account", headers=HEADERS, timeout=8)
-        r.raise_for_status()
-        return float(r.json().get("equity", 0))
-    except Exception as e:
-        logger.error(f"Failed to get account: {e}")
-        return None
+    return BROKER.get_account_equity()
 
 
 def place_bracket_order(symbol, qty, side, take_profit, stop_loss):
-    order_data = {
-        "symbol": symbol,
-        "qty": qty,
-        "side": side,
-        "type": "market",
-        "time_in_force": "day",
-        "order_class": "bracket",
-        "take_profit": {"limit_price": round(take_profit, 2)},
-        "stop_loss": {"stop_price": round(stop_loss, 2)},
-    }
-    logger.info(f"Submitting Order: {json.dumps(order_data)}")
-    r = requests.post(f"{ALPACA_BASE_URL}/v2/orders", json=order_data, headers=HEADERS, timeout=8)
-    if r.status_code in (200, 201):
-        logger.info("Order placed successfully")
-        return r.json()
-    logger.error(f"Order failed: {r.status_code} {r.text}")
-    return None
+    logger.info(f"[{BROKER.name}] Submitting Order: {symbol} {side} {qty} TP={take_profit} SL={stop_loss}")
+    res = BROKER.place_bracket_order(symbol, qty, side, take_profit, stop_loss)
+    if res:
+        logger.info(f"Order placed: id={res.get('id')}")
+    else:
+        logger.error(f"Order failed via {BROKER.name}")
+    return res
 
 
 def _dominant_layer(score_result):
@@ -125,10 +101,18 @@ def _dominant_layer(score_result):
 
 
 def main_loop():
-    logger.info("MILLI-V3 Auto-Trading Bot Started (Paper Trading)")
-    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-        logger.error("Alpaca API keys not set — refusing to start. Set ALPACA_API_KEY / ALPACA_SECRET_KEY.")
+    logger.info(f"MILLI-V3 Auto-Trading Bot starting (broker={BROKER.name})")
+    ok, reason = BROKER.is_ready()
+    if not ok:
+        logger.error(f"Broker {BROKER.name} not ready: {reason}")
         return
+
+    if BROKER.name == "alpaca_paper":
+        logger.warning("⚠️  Alpaca paper supports SPY equity only — for real MES futures set BROKER=tradovate")
+    elif BROKER.name == "tradovate":
+        # For futures, the bot should trade the active MES contract code,
+        # not "SPY". Override the symbol used below.
+        logger.info("Tradovate active — symbol will be MES front-month contract")
 
     while True:
         try:
@@ -221,18 +205,38 @@ def main_loop():
                     and bias in ("LONG", "SHORT")
                 ):
                     logger.info("STRONG SIGNAL DETECTED — submitting bracket order")
-                    qty = 100
                     side = "buy" if bias == "LONG" else "sell"
 
+                    # ATR-based SL/TP (regime-aware RR computed in score_engine)
                     atr = max(d_range, 2.0)
+                    regime_label = score_result["layers"].get("regime", {}).get("regime", "UNKNOWN")
+                    if regime_label in ("TRENDING", "BREAKOUT"):
+                        rr = 3.0
+                    elif regime_label == "CHOPPY":
+                        rr = 1.5
+                    else:
+                        rr = 2.0
                     if bias == "LONG":
-                        tp = spy_price + atr * 2
+                        tp = spy_price + atr * rr
                         sl = spy_price - atr * 1.5
                     else:
-                        tp = spy_price - atr * 2
+                        tp = spy_price - atr * rr
                         sl = spy_price + atr * 1.5
 
-                    res = place_bracket_order("SPY", qty, side, tp, sl)
+                    # Symbol + qty differ by broker type.
+                    if BROKER.supports_futures:
+                        # MES front-month contract code, 1.5% account risk → ~1-3 contracts
+                        from lib.futures_meta import current_mes_contract
+                        symbol = current_mes_contract(now)
+                        equity = get_account_equity() or 10000.0
+                        risk_amount = equity * 0.015
+                        risk_per_contract = abs(spy_price - sl) * 5.0 + 0.50  # $5/pt + commission
+                        qty = max(1, int(risk_amount / risk_per_contract))
+                    else:
+                        symbol = "SPY"
+                        qty = 100  # equity proxy
+
+                    res = place_bracket_order(symbol, qty, side, tp, sl)
                     if res:
                         state.update({
                             "in_position": True,

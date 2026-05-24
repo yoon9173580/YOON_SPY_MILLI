@@ -4,11 +4,75 @@ LAYER 1 — Macro Event Gate
 
 Vercel serverless에서는 외부 캘린더 API 호출 비용/지연을 피하기 위해
 규칙 기반 + 알려진 FOMC 날짜를 임베드해서 사용한다.
+
+자동 갱신 (선택):
+  FETCH_FOMC_LIVE=true 환경변수 켜면 Fed RSS를 1시간 캐시로 가져와
+  하드코딩 FOMC_DATES를 덮어쓴다.
 """
+import os
+import re
+import time
+import requests
 from datetime import datetime, timedelta, time as dtime
 import pytz
 
 NY = pytz.timezone("America/New_York")
+
+_FOMC_LIVE_CACHE = {"at": 0.0, "dates": None}
+FOMC_LIVE_TTL_SEC = 3600   # 1시간
+
+
+def _fetch_live_fomc_dates() -> list | None:
+    """Fed 캘린더 페이지에서 FOMC 결정일을 추출 (베스트-에포트).
+
+    실패하면 None 반환 → 하드코딩 FOMC_DATES 사용.
+    """
+    if os.getenv("FETCH_FOMC_LIVE", "").lower() != "true":
+        return None
+    now = time.time()
+    if _FOMC_LIVE_CACHE["dates"] and now - _FOMC_LIVE_CACHE["at"] < FOMC_LIVE_TTL_SEC:
+        return _FOMC_LIVE_CACHE["dates"]
+    try:
+        r = requests.get(
+            "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+            headers={"User-Agent": "Mozilla/5.0 (MILLI-Algo/1.0)"},
+            timeout=6,
+        )
+        if r.status_code != 200:
+            return None
+        # 날짜 패턴: "March 17-18, 2026" 또는 "Mar 17-18, 2026" 같은 형식
+        # 정확한 결정일(2일차)을 뽑아낸다.
+        html = r.text
+        # "Month dd[-dd], YYYY" 패턴
+        pattern = re.compile(
+            r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+'
+            r'(\d{1,2})(?:[-–](\d{1,2}))?,\s+(20\d{2})',
+            re.IGNORECASE,
+        )
+        months = {m: i+1 for i, m in enumerate(
+            ['January','February','March','April','May','June',
+             'July','August','September','October','November','December'])}
+        seen = set()
+        out = []
+        for match in pattern.finditer(html):
+            mname, d1, d2, yr = match.groups()
+            m = months[mname.capitalize()]
+            day = int(d2) if d2 else int(d1)  # 2일 회의는 2일차가 결정일
+            try:
+                dt = datetime(int(yr), m, day).date()
+                key = dt.isoformat()
+                if key not in seen:
+                    seen.add(key)
+                    out.append(key)
+            except ValueError:
+                continue
+        if out:
+            _FOMC_LIVE_CACHE["dates"] = out
+            _FOMC_LIVE_CACHE["at"] = now
+            return out
+    except Exception:
+        pass
+    return None
 
 # ── FOMC 결정일 (회의 2일차, 발표 시각 14:00 ET) ─────────────
 # 8 meetings/year, 회의 후 발표 시각 = 14:00 ET (Powell 회견 14:30~15:30)
@@ -90,8 +154,9 @@ def _ppi_release_dates(year: int) -> list:
 def _build_calendar(year: int) -> list:
     """주어진 연도의 매크로 이벤트 캘린더 — 정렬된 리스트."""
     events = []
-    # FOMC (hardcoded)
-    for d in FOMC_DATES:
+    # FOMC: 실시간 fetch가 활성화되어 있고 성공하면 그걸 사용, 아니면 하드코딩
+    fomc_source = _fetch_live_fomc_dates() or FOMC_DATES
+    for d in fomc_source:
         try:
             dt = datetime.strptime(d, "%Y-%m-%d").date()
             if dt.year == year:

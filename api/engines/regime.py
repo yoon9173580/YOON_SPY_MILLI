@@ -114,6 +114,73 @@ def _score_adx(adx_value: float) -> tuple:
         return 0, f"ADX {adx_value:.1f} — Choppy/Ranging"
 
 
+def _calculate_bollinger_bandwidth(spy_history: pd.DataFrame, period: int = 20) -> float:
+    """Bollinger Bandwidth = (Upper − Lower) / Middle. 변동성 압축/확장 감지.
+    낮은 값(<1%) = squeeze → 곧 큰 움직임. 높은 값 = 추세 진행 중.
+    """
+    if spy_history is None or len(spy_history) < period:
+        return None
+    try:
+        c = spy_history["Close"]
+        ma = c.rolling(window=period).mean()
+        sd = c.rolling(window=period).std()
+        upper = ma + 2 * sd
+        lower = ma - 2 * sd
+        bw = (upper - lower) / ma * 100  # percentage
+        last = bw.dropna()
+        return float(last.iloc[-1]) if not last.empty else None
+    except Exception:
+        return None
+
+
+def _score_bollinger_bandwidth(bw: float) -> tuple:
+    """BBW <0.5% = squeeze (breakout 임박), 0.5-2% normal, >2% trending."""
+    if bw is None:
+        return 0, "BBW unavailable"
+    if bw < 0.5:
+        return 5, f"BBW {bw:.2f}% — Squeeze (breakout pending)"
+    elif bw > 2.0:
+        return 5, f"BBW {bw:.2f}% — Expansion (trend active)"
+    else:
+        return 0, f"BBW {bw:.2f}% — Normal"
+
+
+def _calculate_atr_pct(spy_history: pd.DataFrame, period: int = 14) -> float:
+    """ATR / Close × 100 = 정규화된 변동성 (가격 무관 비교 가능)."""
+    if spy_history is None or len(spy_history) < period + 1:
+        return None
+    try:
+        h, l, c = spy_history["High"], spy_history["Low"], spy_history["Close"]
+        tr1 = h - l
+        tr2 = (h - c.shift()).abs()
+        tr3 = (l - c.shift()).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=period).mean()
+        last_atr = atr.dropna()
+        if last_atr.empty:
+            return None
+        last_close = float(c.iloc[-1])
+        if last_close <= 0:
+            return None
+        return float(last_atr.iloc[-1] / last_close * 100)
+    except Exception:
+        return None
+
+
+def _score_atr_pct(atr_pct: float) -> tuple:
+    """ATR% 0.3-1.0 = normal, <0.3 = dead, >1.5 = excessive volatility."""
+    if atr_pct is None:
+        return 0, "ATR% unavailable"
+    if 0.3 <= atr_pct <= 1.0:
+        return 5, f"ATR% {atr_pct:.2f} — Healthy volatility"
+    elif atr_pct < 0.3:
+        return -3, f"ATR% {atr_pct:.2f} — Dead market"
+    elif atr_pct > 1.5:
+        return -5, f"ATR% {atr_pct:.2f} — Excessive volatility"
+    else:
+        return 2, f"ATR% {atr_pct:.2f} — Elevated"
+
+
 def _classify_regime(adx_value, vix_price, range_value, opening_range_broken=False):
     """Classify market regime based on indicators."""
     if vix_price and vix_price > 25:
@@ -170,8 +237,18 @@ def calculate_regime_score(vix_price: float, vix3m_price: float,
     adx_score, adx_detail = _score_adx(adx_value)
     details["adx"] = {"score": adx_score, "detail": adx_detail, "value": adx_value}
 
-    # Total regime score
-    total = vix_score + term_score + gap_score + adx_score
+    # Bollinger Bandwidth (volatility compression / expansion)
+    bw_value = _calculate_bollinger_bandwidth(spy_history)
+    bw_score, bw_detail = _score_bollinger_bandwidth(bw_value)
+    details["bbw"] = {"score": bw_score, "detail": bw_detail, "value": bw_value}
+
+    # ATR% (normalized volatility)
+    atr_pct_value = _calculate_atr_pct(spy_history)
+    atr_pct_score, atr_pct_detail = _score_atr_pct(atr_pct_value)
+    details["atr_pct"] = {"score": atr_pct_score, "detail": atr_pct_detail, "value": atr_pct_value}
+
+    # Total regime score (max raised to 50 with BBW/ATR%)
+    total = vix_score + term_score + gap_score + adx_score + bw_score + atr_pct_score
 
     # Regime classification
     regime = _classify_regime(adx_value, vix_price, None)
@@ -188,9 +265,11 @@ def calculate_regime_score(vix_price: float, vix3m_price: float,
 
     return {
         "score": total,
-        "max": 40,
+        "max": 50,   # 15 VIX + 10 term + 5 gap + 15 ADX + 5 BBW + 5 ATR% (max positive)
         "regime": regime,
         "strategy": strategy,
         "details": details,
         "vix_spread": vix_spread,
+        "bbw": bw_value,
+        "atr_pct": atr_pct_value,
     }

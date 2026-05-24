@@ -51,26 +51,45 @@ class AdaptiveWeightEngine:
 
     def update_weights(self, trade_result: dict):
         """
-        Adjust weights based on trade outcome (Reinforcement feedback).
-        trade_result should contain:
-        - "pnl": float (profit or loss)
-        - "dominant_layer": str (the layer that contributed most to entry)
+        Adjust weights based on trade outcome (RL feedback).
+
+        trade_result keys:
+          - "pnl": float
+          - "dominant_layer": str  (regime/correlation/technical/flow)
+          - "magnitude_r": optional float — PnL in R-multiples (signed).
+
+        Magnitude-aware update: larger wins/losses move the weight more,
+        so a +2R win shifts the multiplier twice as much as a +0.5R win.
+        Decay (λ=0.995) gently pulls every weight back toward 1.0 so
+        no single layer can stay over-/under-weighted indefinitely.
         """
         pnl = trade_result.get("pnl", 0)
         dominant = trade_result.get("dominant_layer")
-        
         if not dominant or dominant not in self.weights:
             return
 
-        # Simple learning rate
-        lr = 0.05
-        
+        # Learning rate + decay (env-tunable for live A/B testing)
+        lr = float(os.getenv("ML_LR", "0.05"))
+        decay = float(os.getenv("ML_DECAY", "0.995"))
+        max_w = float(os.getenv("ML_MAX_W", "1.5"))
+        min_w = float(os.getenv("ML_MIN_W", "0.5"))
+
+        # Magnitude scaling: 1R = 1× lr, capped at 3× to prevent
+        # one outlier from dominating the weight surface.
+        magnitude = trade_result.get("magnitude_r")
+        if magnitude is None:
+            magnitude = 1.0
+        scale = max(0.25, min(3.0, abs(float(magnitude))))
+
         if pnl > 0:
-            # Reward
-            self.weights[dominant] = min(1.5, self.weights[dominant] + lr)
+            self.weights[dominant] = min(max_w, self.weights[dominant] + lr * scale)
         elif pnl < 0:
-            # Punish
-            self.weights[dominant] = max(0.5, self.weights[dominant] - lr)
+            self.weights[dominant] = max(min_w, self.weights[dominant] - lr * scale)
+
+        # Decay all weights toward 1.0 so stale advantages dissipate.
+        for k in ("technical", "regime", "flow", "correlation"):
+            cur = self.weights.get(k, 1.0)
+            self.weights[k] = 1.0 + (cur - 1.0) * decay
 
         self.save_weights()
 

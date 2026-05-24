@@ -13,6 +13,7 @@
   ],
   "routes": [
     { "src": "/api/data",   "dest": "/api/data.py" },
+    { "src": "/api/stream", "dest": "/api/data.py" },
     { "src": "/api/unlock", "dest": "/api/data.py" },
     { "src": "/api/logout", "dest": "/api/data.py" },
     { "src": "/(.*)",       "dest": "/index.html"  }

@@ -17,13 +17,87 @@ import requests
 _CACHE = {"at": 0.0, "data": None}
 CACHE_TTL_SEC = 120
 
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
+TRADIER_API_KEY = os.getenv("TRADIER_API_KEY", "")
 
-def _yahoo_options_chain(symbol: str = "SPY") -> dict:
-    """무료 Yahoo 옵션 체인. 0DTE/1DTE 위주.
 
-    응답 예:
-      {"optionChain":{"result":[{"expirationDates":[...],"options":[{"calls":[...],"puts":[...]}]}]}}
+def _polygon_options_chain(symbol: str = "SPY") -> dict | None:
+    """Polygon.io 옵션 체인 — 유료 (Starter $29/mo부터). POLYGON_API_KEY 필요.
+
+    /v3/snapshot/options/SPY 응답을 yahoo와 같은 모양으로 정규화.
     """
+    if not POLYGON_API_KEY:
+        return None
+    try:
+        url = f"https://api.polygon.io/v3/snapshot/options/{symbol}"
+        r = requests.get(url, params={"apiKey": POLYGON_API_KEY, "limit": 250}, timeout=5)
+        if r.status_code != 200:
+            return None
+        results = r.json().get("results", [])
+        if not results:
+            return None
+        # Normalize to Yahoo shape so the downstream parser stays simple.
+        calls, puts = [], []
+        for o in results:
+            day = o.get("day", {}) or {}
+            details = o.get("details", {}) or {}
+            row = {
+                "strike": details.get("strike_price"),
+                "volume": day.get("volume", 0),
+                "openInterest": o.get("open_interest", 0),
+            }
+            if details.get("contract_type") == "call":
+                calls.append(row)
+            elif details.get("contract_type") == "put":
+                puts.append(row)
+        return {"optionChain": {"result": [{"options": [{"calls": calls, "puts": puts}]}]}}
+    except Exception:
+        return None
+
+
+def _tradier_options_chain(symbol: str = "SPY") -> dict | None:
+    """Tradier 옵션 체인 — 유료 ($10/mo). TRADIER_API_KEY 필요."""
+    if not TRADIER_API_KEY:
+        return None
+    try:
+        # Get nearest expiry first
+        exp_r = requests.get(
+            "https://api.tradier.com/v1/markets/options/expirations",
+            params={"symbol": symbol},
+            headers={"Authorization": f"Bearer {TRADIER_API_KEY}", "Accept": "application/json"},
+            timeout=4,
+        )
+        if exp_r.status_code != 200:
+            return None
+        expirations = exp_r.json().get("expirations", {}).get("date", [])
+        if not expirations:
+            return None
+        nearest = expirations[0] if isinstance(expirations, list) else expirations
+
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/options/chains",
+            params={"symbol": symbol, "expiration": nearest, "greeks": "false"},
+            headers={"Authorization": f"Bearer {TRADIER_API_KEY}", "Accept": "application/json"},
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return None
+        opts = r.json().get("options", {}).get("option", [])
+        if not opts:
+            return None
+        calls = [{"strike": o["strike"], "volume": o.get("volume", 0),
+                  "openInterest": o.get("open_interest", 0)}
+                 for o in opts if o.get("option_type") == "call"]
+        puts  = [{"strike": o["strike"], "volume": o.get("volume", 0),
+                  "openInterest": o.get("open_interest", 0)}
+                 for o in opts if o.get("option_type") == "put"]
+        return {"optionChain": {"result": [{"options": [{"calls": calls, "puts": puts}]}]}}
+    except Exception:
+        return None
+
+
+def _yahoo_options_chain(symbol: str = "SPY") -> dict | None:
+    """무료 Yahoo 옵션 체인 — 폴백. rate limited, 신뢰도 낮음."""
     try:
         url = f"https://query2.finance.yahoo.com/v7/finance/options/{symbol}"
         r = requests.get(
@@ -36,6 +110,20 @@ def _yahoo_options_chain(symbol: str = "SPY") -> dict:
         return r.json()
     except Exception:
         return None
+
+
+def _fetch_chain(symbol: str = "SPY") -> tuple[dict | None, str]:
+    """Try premium feeds first, fall back to Yahoo. Returns (chain, source)."""
+    chain = _polygon_options_chain(symbol)
+    if chain:
+        return chain, "POLYGON"
+    chain = _tradier_options_chain(symbol)
+    if chain:
+        return chain, "TRADIER"
+    chain = _yahoo_options_chain(symbol)
+    if chain:
+        return chain, "YAHOO"
+    return None, "NO_DATA"
 
 
 def _parse_flow_metrics(chain_resp: dict) -> dict:
@@ -174,7 +262,7 @@ def calculate_options_flow_score(symbol: str = "SPY") -> dict:
         cached["status"] = "CACHED"
         return cached
 
-    chain = _yahoo_options_chain(symbol)
+    chain, source = _fetch_chain(symbol)
     metrics = _parse_flow_metrics(chain)
 
     if not metrics:
@@ -183,11 +271,12 @@ def calculate_options_flow_score(symbol: str = "SPY") -> dict:
             "max": 30,
             "direction": "NEUTRAL",
             "status": "NO_DATA",
+            "source": source,
             "pc_vol_ratio": None,
             "pc_oi_ratio": None,
             "unusual_count": 0,
             "unusual_top": [],
-            "detail": "Options chain unavailable (Yahoo rate-limit or no data)",
+            "detail": "Options chain unavailable (all sources failed). Set POLYGON_API_KEY or TRADIER_API_KEY.",
         }
         return result
 
@@ -197,6 +286,7 @@ def calculate_options_flow_score(symbol: str = "SPY") -> dict:
         "max": 30,
         "direction": direction,
         "status": "LIVE",
+        "source": source,
         "pc_vol_ratio": metrics["pc_vol_ratio"],
         "pc_oi_ratio": metrics["pc_oi_ratio"],
         "unusual_count": metrics["unusual_count"],

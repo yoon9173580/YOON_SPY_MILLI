@@ -11,6 +11,34 @@
 body{background:var(--bg);color:var(--text);font-family:"Inter",sans-serif;min-height:100vh;overflow-x:hidden}
 body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle at 30% 20%,rgba(91,140,255,0.04) 0%,transparent 50%),radial-gradient(circle at 70% 80%,rgba(0,232,123,0.03) 0%,transparent 50%);pointer-events:none;z-index:0}
 .wrap{max-width:1100px;margin:0 auto;padding:1rem;position:relative;z-index:1}
+
+/* ── Mobile UX (≤700px) ─────────────────────────────────────── */
+@media(max-width:700px){
+  .wrap{padding:0.6rem}
+  html{font-size:14.5px}  /* slightly bumped baseline so 0.55rem stays legible */
+  .status-bar{font-size:0.75rem;padding:0.5rem 0.7rem;flex-wrap:wrap;gap:6px}
+  .gauge-card{padding:1rem}
+  /* Larger touch targets */
+  button,.btn,[role="button"]{min-height:38px}
+  /* Override the tiny font sizes that hurt readability on phones */
+  .th-card-meta{font-size:0.68rem}
+  .th-card-strikes{font-size:0.78rem}
+  .th-card-pct{font-size:0.65rem}
+  .th-card-dir{font-size:0.72rem;padding:0.18rem 0.45rem}
+  .th-card-pnl{font-size:0.92rem}
+  .th-card{padding:0.55rem 0.65rem}
+  /* Distribution charts stack vertically */
+  .dist-charts-grid{grid-template-columns:1fr!important}
+}
+@media(max-width:420px){
+  html{font-size:13.5px}
+  .wrap{padding:0.4rem}
+}
+/* Better tap response on touchscreens */
+@media(hover:none){
+  .th-card:hover{background:initial}
+  .th-card:active{background:rgba(255,255,255,0.06)}
+}
 .mono{font-family:"JetBrains Mono",monospace}
 
 /* Status Bar */
@@ -1463,6 +1491,63 @@ function renderBacktestSummary(py) {
 
     <!-- Trade Distribution Scatter Charts -->
     ${renderDistributionCharts(py)}
+
+    <!-- Portfolio Heat + Tail Risk -->
+    ${renderHeatAndTailRisk(py)}
+
+    <!-- Multi-Instrument Futures Strip -->
+    ${renderFuturesMultiStrip(py)}
+  `;
+}
+
+// ── Portfolio Heat & Tail Risk widgets ──
+function renderHeatAndTailRisk(py) {
+  const ph = py.portfolio_heat || {};
+  const tr = py.tail_risk || {};
+  const heatColor = ph.status === 'OK' ? '#3dd68c' : ph.status === 'WARNING' ? '#f0a23a' : '#ff7070';
+  const trColor = ({NORMAL:'#3dd68c', ELEVATED:'#60a5fa', WARNING:'#f0a23a', CRITICAL:'#ff7070', UNKNOWN:'#556'})[tr.status] || '#556';
+  return `
+    <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div style="background:#0c1428;border:1px solid #1a3060;border-radius:10px;padding:8px 10px">
+        <div style="font-size:9px;color:#8899cc;letter-spacing:.1em;font-weight:700;margin-bottom:4px">PORTFOLIO HEAT</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <span style="color:${heatColor};font-weight:700;font-size:18px">${(ph.heat_pct ?? 0).toFixed(2)}%</span>
+          <span style="color:#556;font-size:10px">/ ${ph.limit_pct ?? 5}% limit</span>
+        </div>
+        <div style="font-size:9px;color:#445;margin-top:2px">${ph.open_positions ?? 0} pos · $${(ph.total_risk_usd ?? 0).toFixed(0)} risk</div>
+      </div>
+      <div style="background:#0c1428;border:1px solid #1a3060;border-radius:10px;padding:8px 10px">
+        <div style="font-size:9px;color:#8899cc;letter-spacing:.1em;font-weight:700;margin-bottom:4px">TAIL RISK (VIX)</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <span style="color:${trColor};font-weight:700;font-size:14px">${tr.status || '—'}</span>
+          <span class="mono" style="color:#8899cc;font-size:11px">${(tr.spike_pct ?? 0) >= 0 ? '+' : ''}${(tr.spike_pct ?? 0).toFixed(1)}%</span>
+        </div>
+        <div style="font-size:9px;color:#445;margin-top:2px">VIX ${(tr.vix ?? 0).toFixed(2)} vs EWMA ${(tr.baseline ?? 0).toFixed(2)}</div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Multi-Instrument Micro-Futures Strip ──
+function renderFuturesMultiStrip(py) {
+  const fm = py.futures_multi || {};
+  const keys = Object.keys(fm);
+  if (!keys.length) return '';
+  return `
+    <div style="margin-top:10px">
+      <div style="font-size:9px;color:#8899cc;letter-spacing:.1em;font-weight:700;margin-bottom:4px">MICRO FUTURES (proxy-derived)</div>
+      <div style="display:grid;grid-template-columns:repeat(${keys.length},1fr);gap:6px">
+        ${keys.map(k => {
+          const f = fm[k];
+          const c = (f.proxy_pct||0) >= 0 ? '#3dd68c' : '#ff7070';
+          return `<div style="background:#0c1428;border:1px solid #1a3060;border-radius:8px;padding:6px;text-align:center">
+            <div style="font-size:10px;font-weight:700;color:#60a5fa">${k}</div>
+            <div class="mono" style="font-size:11px;color:${c};font-weight:700">${(f.proxy_pct >= 0 ? '+' : '')}${(f.proxy_pct||0).toFixed(2)}%</div>
+            <div style="font-size:8px;color:#445">${f.proxy_etf} $${(f.proxy_price||0).toFixed(2)} · $${f.multiplier}/pt</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
   `;
 }
 
@@ -1585,7 +1670,7 @@ function renderDistributionCharts(py) {
       <div style="font-size:10px;color:#8899cc;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">
         📈 Trade Distribution &nbsp;<span style="color:#556;font-weight:400">${hist.length} closed · ${wins}W ${losses}L</span>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div class="dist-charts-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <div style="background:#0c1428;border:1px solid #1a3060;border-radius:10px;padding:8px">${chart1}</div>
         <div style="background:#0c1428;border:1px solid #1a3060;border-radius:10px;padding:8px">${chart2}</div>
       </div>
@@ -1664,10 +1749,61 @@ function renderTradeList(hist, maxAbsPnl, filter) {
           ${!isOpen ? `<div class="th-detail-item"><span class="dlbl">Revenue</span><span class="dval" style="color:${(h.revenue||0)>=(h.cost||0)?'var(--go)':'var(--stop)'}">$${(h.revenue||0).toFixed?.(0) ?? '--'}</span></div>` : ''}
           ${!isOpen ? `<div class="th-detail-item"><span class="dlbl">Exit Value</span><span class="dval">$${(h.exit_val||0).toFixed?.(2) ?? '--'}</span></div>` : ''}
         </div>
+        ${renderTradeJournalEntry(h)}
       </div>
     </div>`;
   }).join('');
 }
+
+// ── 거래 일지 (localStorage 기반) ────────────────────────────
+function tradeJournalKey(h) {
+  return 'tj:' + (h.trade_id || `${h.date||'?'}-${h.entry_time||h.time||'?'}-${h.direction||'?'}`);
+}
+
+function getJournalNote(h) {
+  try { return localStorage.getItem(tradeJournalKey(h)) || ''; }
+  catch(_) { return ''; }
+}
+
+function setJournalNote(h, note) {
+  try {
+    if (note && note.trim()) localStorage.setItem(tradeJournalKey(h), note.trim().slice(0, 500));
+    else localStorage.removeItem(tradeJournalKey(h));
+  } catch(_) {}
+}
+
+function renderTradeJournalEntry(h) {
+  const key = tradeJournalKey(h);
+  const note = getJournalNote(h);
+  const safeNote = note.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return `
+    <div class="th-journal" onclick="event.stopPropagation()" style="margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,255,255,0.06)">
+      <div style="display:flex;gap:5px;align-items:center;font-size:0.6rem;color:var(--muted);margin-bottom:2px">
+        <span>📓 Journal</span>
+        ${note ? `<span style="color:var(--info)">●</span>` : ''}
+      </div>
+      <textarea
+        data-key="${key}"
+        placeholder="Reason for entry, what worked, what to improve..."
+        oninput="window._saveJournal(this)"
+        style="width:100%;min-height:42px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.08);border-radius:5px;color:var(--text);font-family:inherit;font-size:0.7rem;padding:5px 7px;resize:vertical">${safeNote}</textarea>
+    </div>`;
+}
+
+// Debounced journal save (called from textarea oninput)
+window._saveJournal = (() => {
+  const timers = new Map();
+  return function(el) {
+    const key = el.dataset.key;
+    if (timers.has(key)) clearTimeout(timers.get(key));
+    timers.set(key, setTimeout(() => {
+      try {
+        if (el.value && el.value.trim()) localStorage.setItem(key, el.value.trim().slice(0, 500));
+        else localStorage.removeItem(key);
+      } catch(_) {}
+    }, 350));
+  };
+})();
 
 // Tab click handler
 document.getElementById('thTabs').addEventListener('click', e => {
