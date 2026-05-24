@@ -1,22 +1,22 @@
 """
 LAYER 6 — Technical Entry Triggers
 Layer 1~5가 모두 통과(스코어 60+)한 경우에만 실행.
-이 레이어에서 실제 Call/Put 방향 결정.
+이 레이어에서 실제 Long/Short 방향 결정.
 """
 import pandas as pd
 
 
 def _score_vwap_position(spy_price: float, vwap: float) -> tuple:
-    """Price vs VWAP: above = Call bias, below = Put bias."""
+    """Price vs VWAP: above = Long bias, below = Short bias."""
     if spy_price is None or vwap is None:
         return 0, "NEUTRAL", "VWAP data unavailable"
     dist = spy_price - vwap
     pct = (dist / vwap) * 100 if vwap != 0 else 0
 
     if dist > 0:
-        return 10, "CALL", f"Above VWAP by ${dist:+.2f} ({pct:+.2f}%)"
+        return 10, "LONG", f"Above VWAP by ${dist:+.2f} ({pct:+.2f}%)"
     else:
-        return 10, "PUT", f"Below VWAP by ${dist:+.2f} ({pct:+.2f}%)"
+        return 10, "SHORT", f"Below VWAP by ${dist:+.2f} ({pct:+.2f}%)"
 
 
 def _score_vwap_bands(spy_price: float, vwap: float, spy_history: pd.DataFrame) -> tuple:
@@ -104,17 +104,17 @@ def _calculate_rsi(spy_history: pd.DataFrame, period: int = 14) -> float:
 
 
 def _score_momentum(rsi: float) -> tuple:
-    """RSI momentum: >60 = Call bias, <40 = Put bias."""
+    """RSI momentum: >60 = Long bias, <40 = Short bias."""
     if rsi is None:
         return 0, "NEUTRAL", "RSI unavailable"
     if rsi >= 70:
-        return 5, "CALL", f"RSI {rsi:.1f} — Overbought (caution)"
+        return 5, "LONG", f"RSI {rsi:.1f} — Overbought (caution)"
     elif rsi >= 60:
-        return 10, "CALL", f"RSI {rsi:.1f} — Bullish momentum"
+        return 10, "LONG", f"RSI {rsi:.1f} — Bullish momentum"
     elif rsi <= 30:
-        return 5, "PUT", f"RSI {rsi:.1f} — Oversold (caution)"
+        return 5, "SHORT", f"RSI {rsi:.1f} — Oversold (caution)"
     elif rsi <= 40:
-        return 10, "PUT", f"RSI {rsi:.1f} — Bearish momentum"
+        return 10, "SHORT", f"RSI {rsi:.1f} — Bearish momentum"
     else:
         return 0, "NEUTRAL", f"RSI {rsi:.1f} — Neutral"
 
@@ -130,12 +130,12 @@ def calculate_technical_score(spy_price: float, vwap: float,
     dict with keys:
         score          : int (max ~30)
         max            : int (30)
-        direction_bias : str (CALL / PUT / NEUTRAL)
+        direction_bias : str (LONG / SHORT / NEUTRAL)
         details        : dict — component breakdown
         rsi            : float or None
     """
     details = {}
-    bias_votes = {"CALL": 0, "PUT": 0, "NEUTRAL": 0}
+    bias_votes = {"LONG": 0, "SHORT": 0, "NEUTRAL": 0}
 
     # VWAP position
     vwap_score, vwap_dir, vwap_detail = _score_vwap_position(spy_price, vwap)
@@ -164,10 +164,10 @@ def calculate_technical_score(spy_price: float, vwap: float,
     total = min(30, vwap_score + band_score + vol_score + range_score + rsi_score)
 
     # Direction bias — majority vote
-    if bias_votes["CALL"] > bias_votes["PUT"]:
-        direction = "CALL"
-    elif bias_votes["PUT"] > bias_votes["CALL"]:
-        direction = "PUT"
+    if bias_votes["LONG"] > bias_votes["SHORT"]:
+        direction = "LONG"
+    elif bias_votes["SHORT"] > bias_votes["LONG"]:
+        direction = "SHORT"
     else:
         direction = "NEUTRAL"
 

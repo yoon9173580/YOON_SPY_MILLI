@@ -33,7 +33,7 @@ ES_SLIPPAGE_PTS  = 0.25     # 1 tick slippage per side
 ES_DAY_MARGIN    = 50.0     # Day-trading margin per contract
 ES_TICK_SIZE     = 0.25     # Minimum price increment
 ATR_SL_MULT      = 1.5      # SL = 1.5x ATR proxy (range-based)
-RISK_PCT         = 0.12     # 12% Kelly-informed risk per trade
+RISK_PCT         = 0.015    # 1.5% Kelly-informed risk per trade
 DAILY_LOSS_LIMIT = 0.06     # Halt trading if daily drawdown > 6%
 MAX_OPEN_TRADES  = 1        # Max 1 MES position simultaneously
 
@@ -379,12 +379,12 @@ def _calculate_es_order_flow(spy_price, vix_price, normalized_score, direction_b
         ask_size = max(5, int(base_size * depth_factor * (0.7 + random.random() * 0.6)))
         
         # Bias: stronger signal shifts liquidity
-        if direction_bias == "CALL":  # Bullish
+        if direction_bias == "LONG":  # Bullish
             if i < 0:  # Below center: more bids (support)
                 bid_size = int(bid_size * 1.3)
             else:  # Above center: thinner asks (less resistance)
                 ask_size = int(ask_size * 0.8)
-        elif direction_bias == "PUT":  # Bearish
+        elif direction_bias == "SHORT":  # Bearish
             if i > 0:  # Above center: more asks (resistance)
                 ask_size = int(ask_size * 1.3)
             else:  # Below center: thinner bids (less support)
@@ -859,7 +859,7 @@ def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now
         return False
 
     # Must have clear directional bias
-    if direction_bias not in ("CALL", "PUT"):
+    if direction_bias not in ("LONG", "SHORT"):
         return False
 
     # Daily loss limit halt — stop trading if down > 6% today
@@ -890,7 +890,7 @@ def _position_invalid_reason(open_pos, grade, direction_bias, score_result):
     layers = score_result.get("layers", {})
     if layers.get("risk", {}).get("passed") is False or grade == "LOCKED":
         return "RISK"
-    if direction_bias not in ("CALL", "PUT"):
+    if direction_bias not in ("LONG", "SHORT"):
         return "DIRECTION"
     if open_pos.get("direction") != direction_bias:
         return "DIRECTION"
@@ -1374,7 +1374,7 @@ class handler(BaseHTTPRequestHandler):
             open_pos = portfolio.get("positions", {}).get(today_str)
             if not open_pos and is_regular and _entry_criteria_met(grade, direction_bias, score_result, portfolio, now):
                 cash = portfolio["cash"]
-                es_direction = "LONG" if direction_bias == "CALL" else "SHORT"
+                es_direction = direction_bias
                 
                 # ATR-based SL (use range as proxy)
                 atr_proxy = max(d_range, 2.0) if d_range > 0 else 4.0

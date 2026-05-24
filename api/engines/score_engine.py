@@ -244,10 +244,10 @@ def run_score_engine(now_et: datetime,
         direction_bias = raw_bias
     else:
         # Inverted: Fade the direction bias (Counter-Trend / Mean Reversion)
-        if raw_bias == "CALL":
-            direction_bias = "PUT"
-        elif raw_bias == "PUT":
-            direction_bias = "CALL"
+        if raw_bias == "LONG":
+            direction_bias = "SHORT"
+        elif raw_bias == "SHORT":
+            direction_bias = "LONG"
         else:
             direction_bias = "NEUTRAL"
 

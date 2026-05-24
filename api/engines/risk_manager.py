@@ -61,18 +61,23 @@ def _calculate_weekly_pnl(portfolio: dict) -> float:
 
 def calculate_position_size(portfolio: dict, signal_grade: str, entry_price: float) -> dict:
     """
-    Dynamic position sizing based on account balance and signal strength.
+    Dynamic position sizing based on MES Futures Day Margin ($50 per contract)
+    and 1.5% account risk rule.
 
     Returns
     -------
     dict with keys:
-        max_shares      : int
+        max_shares      : int (represents contracts for futures)
+        contracts       : int
         max_risk_amount : float
         sizing_reason   : str
     """
     cash = portfolio.get("cash", 0)
     initial = portfolio.get("initial_balance", 2000.0)
-    max_risk = initial * (MAX_TRADE_LOSS_PCT / 100)
+    
+    # 1.5% risk rule (from Alpaca optimized backtest)
+    RISK_PCT = 0.015
+    max_risk = initial * RISK_PCT
 
     if signal_grade == "STRONG":
         allocation = 1.0   # Full position
@@ -82,13 +87,24 @@ def calculate_position_size(portfolio: dict, signal_grade: str, entry_price: flo
         allocation = 0.0   # No position
 
     risk_amount = max_risk * allocation
-    max_shares = int(min(cash, risk_amount) // entry_price) if entry_price > 0 else 0
+    
+    # MES Day Margin is $50. We also assume expected stop-loss risk is ~$15 (3 points of MES)
+    MES_DAY_MARGIN = 50.0
+    expected_risk_per_contract = 15.0
+
+    if risk_amount > 0:
+        contracts_by_risk = int(risk_amount / expected_risk_per_contract)
+        contracts_by_margin = int(cash / MES_DAY_MARGIN)
+        contracts = max(1, min(contracts_by_risk, contracts_by_margin))
+    else:
+        contracts = 0
 
     return {
-        "max_shares": max_shares,
+        "max_shares": contracts,  # For backward-compatibility with option shares
+        "contracts": contracts,
         "max_risk_amount": round(risk_amount, 2),
         "allocation_pct": int(allocation * 100),
-        "sizing_reason": f"{int(allocation * 100)}% allocation ({signal_grade} signal)",
+        "sizing_reason": f"{int(allocation * 100)}% allocation ({signal_grade} signal) - {contracts} MES Contracts",
     }
 
 
