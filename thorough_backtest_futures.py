@@ -196,7 +196,7 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
     print("[*] Parsing timestamps...")
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df.set_index("timestamp", inplace=True)
-    df.index = df.index.tz_convert(NY)
+    df.index = df.index.tz_localize("UTC").tz_convert(NY) if df.index.tz is None else df.index.tz_convert(NY)
     df = df.sort_index()
 
     # Filter dates
@@ -356,22 +356,26 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
            (spy_ret < -SECTOR_THRESHOLD and qqq_ret < -SECTOR_THRESHOLD and iwm_ret < -SECTOR_THRESHOLD):
             is_runaway_trend = True
 
-        # Entry filter
+        # Entry filter — accept both legacy CALL/PUT and new LONG/SHORT bias outputs
         grade = "STRONG" if boosted_score >= MIN_SCORE else "MODERATE" if boosted_score >= 75 else "WEAK"
-        if boosted_score < MIN_SCORE or direction not in ("CALL", "PUT") or is_runaway_trend:
+        if boosted_score < MIN_SCORE or direction not in ("CALL", "PUT", "LONG", "SHORT") or is_runaway_trend:
             continue
 
+        # Normalize to LONG/SHORT internally
+        is_bull_signal = direction in ("CALL", "LONG")
+        is_bear_signal = direction in ("PUT", "SHORT")
+
         # Daily Bias Filter: skip SHORT in bullish daily trend (low VIX)
-        if daily_trend_long and direction == "PUT" and vix_val < VIX_THRESHOLD:
+        if daily_trend_long and is_bear_signal and vix_val < VIX_THRESHOLD:
             continue
 
         # -- Adaptive Strategy Switching --
         is_trending = (vix_val < VIX_THRESHOLD)
         if is_trending:
-            trade_dir = "LONG" if direction == "CALL" else "SHORT"
+            trade_dir = "LONG" if is_bull_signal else "SHORT"
             strategy_used = "TREND_FOLLOW"
         else:
-            trade_dir = "SHORT" if direction == "CALL" else "LONG"
+            trade_dir = "SHORT" if is_bull_signal else "LONG"
             strategy_used = "MEAN_REVERSION"
 
         # -- Kelly-Informed Position Sizing --

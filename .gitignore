@@ -17,6 +17,7 @@ data_cache/
 SPY_1min_data.csv
 *_1min_data.csv
 backtest_v4.json
+backtest_futures.json
 
 # Environments
 .venv/

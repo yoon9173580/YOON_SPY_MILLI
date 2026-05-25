@@ -41,34 +41,35 @@ MAX_OPEN_TRADES  = 1        # Max 1 MES position simultaneously
 # ── Backtest Summary (embedded static data — no file read at runtime) ─
 BACKTEST_SUMMARY = {
     "mes_futures": {
-        # v5: 원본 78 trades를 새 알고리듬 필터 (90<=score<=100, SHORT>=93,
-        # VIX<25, Macro/Roll window 차단)로 재시뮬레이션한 결과.
-        "model": "MES Futures v5 (post-fix algo filters applied)",
+        # Measured 2026-05-25 from real Databento CME Globex MDP 3.0 MES.c.0
+        # OHLCV-1m data (3 years, 1,052,817 bars) via thorough_backtest_futures.py.
+        # Replaces the prior projection that was awaiting 1-min CSV ingestion.
+        "model": "MES Futures v4 (Databento real CME data)",
         "period": "2023-03-25 ~ 2026-03-25",
         "period_days": 1095,
-        "strategy": "ATR SL=1.5x | Regime RR | Score 90-100 | SHORT>=93 | VIX<25 | Macro/Roll filtered | 15:00 EOD",
-        "total_trades": 51,
-        "wins": 38,
-        "losses": 13,
-        "win_rate": 74.5,
-        "profit_factor": 4.04,
-        "avg_win_mes": 25.91,
-        "avg_loss_mes": -18.74,
-        "rr_realized": 1.38,
-        "max_drawdown_pct": 4.89,
-        "annual_return_pct": 24.7,
-        "total_pnl_pct": 74.1,
-        "sharpe": 1.62,
-        "max_consecutive_losses": 2,
-        "filter_efficiency": {
-            "original_trades": 78,
-            "trades_removed": 27,
-            "trades_kept": 51,
-            "wr_uplift_pp": 7.8,
-            "pf_uplift": 1.13,
+        "strategy": "ATR SL=1.5x + Trail + BE | Risk=10% | NR7/Pullback/Gap/Daily bias | MIN_SCORE=88 | 10:30 entry / 15:30 EOD",
+        "total_trades": 54,
+        "wins": 33,
+        "losses": 21,
+        "win_rate": 61.1,
+        "profit_factor": 2.39,
+        "avg_win_mes": 739.87,
+        "avg_loss_mes": -485.76,
+        "rr_realized": 1.52,
+        "max_drawdown_pct": 23.7,
+        "annual_return_pct": 33.9,
+        "total_pnl_pct": 142.1,
+        "by_year": {
+            "2023_partial": {"trades": 11, "wr": 63.6, "pnl_mes": 1080},
+            "2024":         {"trades": 17, "wr": 58.8, "pnl_mes": 2210},
+            "2025":         {"trades": 21, "wr": 61.9, "pnl_mes": 10888},
+            "2026_partial": {"trades": 5,  "wr": 60.0, "pnl_mes":    37}
         },
-        "vs_v3": "WR +7.8pp / PF +39% / DD ~unchanged / 27 lower-quality trades cut",
-        "note": "v5 = original v3 backtest (78건) re-simulated with new filters. 1-min CSV 재백테스트는 데이터 인제스션 대기."
+        "exit_breakdown": {"EOD": 35, "SL": 16, "BE": 3, "TRAIL": 0},
+        "status": "ACTUAL",
+        "data_source": "Databento GLBX.MDP3 MES.c.0 ohlcv-1m (real CME Globex)",
+        "vs_prior_projection": "WR 74.5% -> 61.1% (-13pp) | PF 4.04 -> 2.39 (-1.65) | DD 4.89% -> 23.7% (5x worse — prior estimate dramatically understated tail risk)",
+        "note": "Real Databento data. Avg win/loss shown in MES dollars ($5/pt). Annual is CAGR over 3 years. DD = 23.7% means strategy can lose ~1/4 of account before recovery — paper-trade through a drawdown before going live."
     },
     "bear_market_2022": {
         # Synthetic stress test — extrapolated from 2022 SPY daily data
