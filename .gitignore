@@ -40,3 +40,4 @@ alpace-*.json
 
 # Vercel
 .vercel/
+walk_forward_results.json
