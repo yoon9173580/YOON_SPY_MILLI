@@ -43,33 +43,36 @@ BACKTEST_SUMMARY = {
     "mes_futures": {
         # Measured 2026-05-25 from real Databento CME Globex MDP 3.0 MES.c.0
         # OHLCV-1m data (3 years, 1,052,817 bars) via thorough_backtest_futures.py.
-        # Replaces the prior projection that was awaiting 1-min CSV ingestion.
-        "model": "MES Futures v4 (Databento real CME data)",
+        # CORRECTED: Now uses live MES params (multiplier=$5/pt, RISK_PCT=1.5%)
+        # Prior measurement used ES params (mult=$50, risk=12%) then naively
+        # divided dollars by 10 — that produced misleading 33.9% annual / 23.7%
+        # DD. Correct rerun shows much safer and more realistic numbers.
+        "model": "MES Futures v4 (Databento real CME data, live params)",
         "period": "2023-03-25 ~ 2026-03-25",
         "period_days": 1095,
-        "strategy": "ATR SL=1.5x + Trail + BE | Risk=10% | NR7/Pullback/Gap/Daily bias | MIN_SCORE=88 | 10:30 entry / 15:30 EOD",
-        "total_trades": 54,
+        "strategy": "ATR SL=1.5x + Trail + BE | Risk=1.5% | NR7/Pullback/Gap/Daily bias | MIN_SCORE=88 | 10:30 entry / 15:30 EOD",
+        "total_trades": 55,
         "wins": 33,
-        "losses": 21,
-        "win_rate": 61.1,
-        "profit_factor": 2.39,
-        "avg_win_mes": 739.87,
-        "avg_loss_mes": -485.76,
-        "rr_realized": 1.52,
-        "max_drawdown_pct": 23.7,
-        "annual_return_pct": 33.9,
-        "total_pnl_pct": 142.1,
+        "losses": 22,
+        "win_rate": 60.0,
+        "profit_factor": 2.58,
+        "avg_win_mes": 212.48,
+        "avg_loss_mes": -123.58,
+        "rr_realized": 1.72,
+        "max_drawdown_pct": 3.6,
+        "annual_return_pct": 12.6,
+        "total_pnl_pct": 42.9,
         "by_year": {
-            "2023_partial": {"trades": 11, "wr": 63.6, "pnl_mes": 1080},
-            "2024":         {"trades": 17, "wr": 58.8, "pnl_mes": 2210},
-            "2025":         {"trades": 21, "wr": 61.9, "pnl_mes": 10888},
-            "2026_partial": {"trades": 5,  "wr": 60.0, "pnl_mes":    37}
+            "2023_partial": {"trades": 11, "wr": 63.6, "pnl_mes":  852},
+            "2024":         {"trades": 17, "wr": 58.8, "pnl_mes": 1410},
+            "2025":         {"trades": 22, "wr": 59.1, "pnl_mes": 1986},
+            "2026_partial": {"trades": 5,  "wr": 60.0, "pnl_mes":   45}
         },
-        "exit_breakdown": {"EOD": 35, "SL": 16, "BE": 3, "TRAIL": 0},
+        "exit_breakdown": {"EOD": 35, "SL": 17, "BE": 3, "TRAIL": 0},
         "status": "ACTUAL",
         "data_source": "Databento GLBX.MDP3 MES.c.0 ohlcv-1m (real CME Globex)",
-        "vs_prior_projection": "WR 74.5% -> 61.1% (-13pp) | PF 4.04 -> 2.39 (-1.65) | DD 4.89% -> 23.7% (5x worse — prior estimate dramatically understated tail risk)",
-        "note": "Real Databento data. Avg win/loss shown in MES dollars ($5/pt). Annual is CAGR over 3 years. DD = 23.7% means strategy can lose ~1/4 of account before recovery — paper-trade through a drawdown before going live."
+        "vs_prior_run": "Prior 'ACTUAL' values used ES mult/12% risk then /10 rescale — produced misleading 33.9% annual / 23.7% DD. Rerun with live MES@1.5% gives realistic 12.6% / 3.6% DD.",
+        "note": "Real Databento data + live params. $10k → $14,293 in 3yr. 60% WR, 2.58 PF, 1.72 R:R. MDD 3.6% means worst drawdown was a $360 loss on $10k. Conservative but compounds: $10k → ~$14k in 3yr."
     },
     "bear_market_2022": {
         # Synthetic stress test — extrapolated from 2022 SPY daily data
