@@ -681,21 +681,24 @@ function colorToRgba(color, alpha) {
 }
 
 function renderLayerBars(layers) {
+  // Fallback maxes (used only if API didn't include layer.max).
+  // Authoritative values come from each engine in api/engines/*.py.
   const defs = [
-    {key:'regime', name:'Regime', max:40},
-    {key:'options_flow', name:'Opt Flow', max:30},
-    {key:'correlation', name:'Correlat.', max:20},
-    {key:'time_window', name:'Time Win', max:20},
-    {key:'technical', name:'Technical', max:30},
+    {key:'regime', name:'Regime', fallbackMax:50},
+    {key:'options_flow', name:'Opt Flow', fallbackMax:30},
+    {key:'correlation', name:'Correlat.', fallbackMax:20},
+    {key:'time_window', name:'Time Win', fallbackMax:20},
+    {key:'technical', name:'Technical', fallbackMax:30},
   ];
   const el = document.getElementById('layerBars');
   el.innerHTML = defs.map(d => {
     const l = layers?.[d.key];
     const score = l?.score ?? 0;
+    const max = l?.max ?? d.fallbackMax;  // prefer API value over hardcoded fallback
     const noData = d.key === 'options_flow' && l?.status === 'NO_DATA';
-    const pct = Math.max(0, Math.min(100, (score / d.max) * 100));
+    const pct = Math.max(0, Math.min(100, (score / max) * 100));
     const color = noData ? '#445' : (pct >= 70 ? 'var(--go)' : pct >= 40 ? 'var(--warn)' : 'var(--stop)');
-    const displayScore = noData ? '—' : `${score}/${d.max}`;
+    const displayScore = noData ? '—' : `${score}/${max}`;
     return `<div class="layer-row">
       <span class="layer-name">${d.name}</span>
       <div class="layer-bar-bg"><div class="layer-bar-fill" style="width:${pct}%;background:${color}"></div></div>

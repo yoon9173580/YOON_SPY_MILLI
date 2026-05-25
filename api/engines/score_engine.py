@@ -176,9 +176,9 @@ def run_score_engine(now_et: datetime,
         layers["correlation"]["max"] +
         layers["time_window"]["max"] +
         layers["technical"]["max"]
-    )  # = 40 + 20 + 20 + 30 = 110
+    )  # = 50 + 20 + 20 + 30 = 120 (regime max is 50, not 40 as old comment said)
     if of_live:
-        active_max += layers["options_flow"]["max"]  # +30 → 140
+        active_max += layers["options_flow"]["max"]  # +30 → 150
 
     # Normalize score to 0-100 scale for signal grade
     normalized = int((total_score / active_max) * 100) if active_max > 0 else 0
