@@ -158,6 +158,8 @@ def prep_daily_features(spy_d):
     spy_d["ADX"] = calc_adx(spy_d)
     spy_d["VWAP"] = (spy_d["Volume"] * (spy_d["High"] + spy_d["Low"] + spy_d["Close"]) / 3).cumsum() / spy_d["Volume"].cumsum()
     spy_d["VolRatio"] = spy_d["Volume"] / spy_d["Volume"].rolling(20).mean()
+    spy_d["SMA50"] = spy_d["Close"].rolling(50).mean()
+    spy_d["SMA20"] = spy_d["Close"].rolling(20).mean()
     return spy_d
 
 
@@ -231,7 +233,14 @@ def simulate_intraday(day_bars, K_buy, K_sell, net_debit, opt, iv, r,
 
 # ── Main backtest ─────────────────────────────────────────────────
 def run_backtest(start_date=None, end_date=None, balance=2000.0,
-                 min_score=90, tp_pct=1.00, sl_pct=1.00, spread_width=5):
+                 min_score=90, tp_pct=1.00, sl_pct=1.00, spread_width=5,
+                 direction_mode="cum_vwap", regime_filter="none",
+                 vix_max=None, vix_min=None):
+    """direction_mode: cum_vwap | orb | first_hour | intraday_vwap
+       regime_filter: none | sma50 | sma20 | both_sma
+       vix_max: skip if VIX > vix_max
+       vix_min: skip if VIX < vix_min
+    """
     print("=" * 80)
     print("  SPY 0DTE BACKTEST — 1-MIN PRECISE (BS + Intraday Path)")
     print("=" * 80)
@@ -329,15 +338,78 @@ def run_backtest(start_date=None, end_date=None, balance=2000.0,
             print(f"{ds:<11} {score:>3} {'X':<2} {grade:<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
             continue
 
+        # ─── Regime filter (v2 NEW) ───
+        sma50 = float(spy_row["SMA50"]) if pd.notna(spy_row.get("SMA50")) else None
+        sma20 = float(spy_row["SMA20"]) if pd.notna(spy_row.get("SMA20")) else None
+
+        if regime_filter == "sma50" and sma50 is not None and spy_c < sma50:
+            print(f"{ds:<11} {score:>3} {'R':<2} {'<S50':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+            continue
+        if regime_filter == "sma20" and sma20 is not None and spy_c < sma20:
+            print(f"{ds:<11} {score:>3} {'R':<2} {'<S20':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+            continue
+        if regime_filter == "both_sma":
+            if sma50 is not None and spy_c < sma50:
+                print(f"{ds:<11} {score:>3} {'R':<2} {'<S50':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+                continue
+            if sma20 is not None and spy_c < sma20:
+                print(f"{ds:<11} {score:>3} {'R':<2} {'<S20':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+                continue
+        if vix_max is not None and vix_val > vix_max:
+            print(f"{ds:<11} {score:>3} {'V':<2} {'>VX':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+            continue
+        if vix_min is not None and vix_val < vix_min:
+            print(f"{ds:<11} {score:>3} {'V':<2} {'<VX':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+            continue
+
         # Find 10:30 AM entry bar
         entry_bars = day_bars[day_bars["time_of_day"] == ENTRY_TIME]
         if len(entry_bars) == 0:
-            # fallback: closest bar after 10:30
             entry_bars = day_bars[day_bars["time_of_day"] >= ENTRY_TIME]
             if len(entry_bars) == 0:
                 continue
         entry_bar = entry_bars.iloc[0]
         S_entry = float(entry_bar["close"])
+
+        # ─── DIRECTION OVERRIDE based on mode ───
+        if direction_mode == "orb":
+            orb_bars = day_bars[(day_bars["time_of_day"] >= SESSION_OPEN)
+                              & (day_bars["time_of_day"] < dt_time(10, 0))]
+            if len(orb_bars) < 5:
+                print(f"{ds:<11} {score:>3} {'X':<2} {'NORB':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+                continue
+            orb_high = float(orb_bars["high"].max())
+            orb_low  = float(orb_bars["low"].min())
+            if S_entry > orb_high:
+                direction = "CALL"
+            elif S_entry < orb_low:
+                direction = "PUT"
+            else:
+                print(f"{ds:<11} {score:>3} {'X':<2} {'INRG':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+                continue
+        elif direction_mode == "first_hour":
+            # 9:30 open vs 10:30 entry %
+            open_bar = day_bars[day_bars["time_of_day"] == SESSION_OPEN]
+            if len(open_bar) == 0:
+                continue
+            S_open = float(open_bar.iloc[0]["open"])
+            fh_pct = ((S_entry / S_open) - 1.0) * 100.0
+            if fh_pct > 0.3:
+                direction = "CALL"
+            elif fh_pct < -0.3:
+                direction = "PUT"
+            else:
+                print(f"{ds:<11} {score:>3} {'X':<2} {'FLAT':<4} {'':>5} {'':>3} {'':>6} {'':>6} {'':>7} {'SKIP':>7} {'':>4} ${balance:>9,.0f}")
+                continue
+        elif direction_mode == "intraday_vwap":
+            entry_vwap = float(entry_bar["vwap"]) if pd.notna(entry_bar["vwap"]) else S_entry
+            if S_entry > entry_vwap:
+                direction = "CALL"
+            elif S_entry < entry_vwap:
+                direction = "PUT"
+            else:
+                continue
+        # else: cum_vwap (already set by score_day)
 
         opt = "call" if direction == "CALL" else "put"
         iv = vix_val / 100.0
@@ -483,11 +555,37 @@ def run_backtest(start_date=None, end_date=None, balance=2000.0,
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3:
-        run_backtest(start_date=sys.argv[1], end_date=sys.argv[2])
-    elif len(sys.argv) == 2:
-        # If single arg, treat as start_date, end = CSV end
-        run_backtest(start_date=sys.argv[1])
-    else:
-        # Default: full CSV range
-        run_backtest()
+    import argparse
+    parser = argparse.ArgumentParser(description="SPY 0DTE 1-min precise options backtest")
+    parser.add_argument("dates", nargs="*", help="Optional: start_date [end_date] (YYYY-MM-DD)")
+    parser.add_argument("--balance",   type=float, default=2000.0, help="Starting balance ($)")
+    parser.add_argument("--min-score", type=int,   default=90,     help="Minimum score for entry")
+    parser.add_argument("--tp",        type=float, default=1.00,   help="Take profit (fraction of debit, 1.00 = +100%)")
+    parser.add_argument("--sl",        type=float, default=1.00,   help="Stop loss (fraction of debit, 1.00 = no SL)")
+    parser.add_argument("--width",     type=int,   default=5,      help="Debit spread width ($)")
+    parser.add_argument("--direction", type=str,   default="cum_vwap",
+                        choices=["cum_vwap", "orb", "first_hour", "intraday_vwap"],
+                        help="Direction signal mode")
+    parser.add_argument("--regime",    type=str,   default="none",
+                        choices=["none", "sma50", "sma20", "both_sma"],
+                        help="Regime filter (skip when SPY below SMA)")
+    parser.add_argument("--vix-max",   type=float, default=None, help="Skip if VIX > this")
+    parser.add_argument("--vix-min",   type=float, default=None, help="Skip if VIX < this")
+    args = parser.parse_args()
+
+    start_date = args.dates[0] if len(args.dates) >= 1 else None
+    end_date   = args.dates[1] if len(args.dates) >= 2 else None
+
+    run_backtest(
+        start_date=start_date,
+        end_date=end_date,
+        balance=args.balance,
+        min_score=args.min_score,
+        tp_pct=args.tp,
+        sl_pct=args.sl,
+        spread_width=args.width,
+        direction_mode=args.direction,
+        regime_filter=args.regime,
+        vix_max=args.vix_max,
+        vix_min=args.vix_min,
+    )
