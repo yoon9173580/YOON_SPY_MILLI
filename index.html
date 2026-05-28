@@ -1532,6 +1532,9 @@ function renderBacktestSummary(py) {
 
     <!-- Multi-Instrument Futures Strip -->
     ${renderFuturesMultiStrip(py)}
+
+    <!-- SPY 0DTE Iron Condor signal (parallel to MES algo) -->
+    ${renderICSignal(py)}
   `;
 }
 
@@ -1581,6 +1584,50 @@ function renderFuturesMultiStrip(py) {
             <div style="font-size:8px;color:#445">${f.proxy_etf} $${(f.proxy_price||0).toFixed(2)} · $${f.multiplier}/pt</div>
           </div>`;
         }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ── SPY 0DTE Iron Condor parallel signal ──
+function renderICSignal(py) {
+  const ic = py.ic_signal;
+  if (!ic || !ic.available) return '';
+  const fire = ic.should_fire;
+  const blocked = !!ic.block_reason;
+  const bg = fire ? '#0c2b1f' : (blocked ? '#3d1a1a' : '#0c1428');
+  const border = fire ? '#1e6b3f' : (blocked ? '#6b1b1b' : '#1a3060');
+  const color = fire ? '#3dd68c' : (blocked ? '#ff7070' : '#8899cc');
+  const badge = fire ? '🟢 ENTRY' : (blocked ? `🚫 ${ic.block_reason}` : 'STANDBY');
+  const s = ic.structure || {};
+  return `
+    <div style="margin-top:10px;background:${bg};border:1px solid ${border};border-radius:10px;padding:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-size:10px;color:#c084fc;letter-spacing:.1em;font-weight:700;text-transform:uppercase">
+          🦅 SPY 0DTE Iron Condor (parallel signal)
+        </div>
+        <span style="font-size:9px;color:${color};font-weight:700;padding:2px 8px;border-radius:10px;background:rgba(0,0,0,.3)">${badge}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:6px;font-size:11px">
+        <div style="background:rgba(0,0,0,.3);border-radius:6px;padding:6px;text-align:center">
+          <div style="color:#556;font-size:8px">SCORE</div>
+          <div style="color:${color};font-weight:700">${ic.score}</div>
+        </div>
+        <div style="background:rgba(0,0,0,.3);border-radius:6px;padding:6px;text-align:center">
+          <div style="color:#556;font-size:8px">GRADE</div>
+          <div style="color:${color};font-weight:700">${ic.grade}</div>
+        </div>
+        <div style="background:rgba(0,0,0,.3);border-radius:6px;padding:6px;text-align:center">
+          <div style="color:#556;font-size:8px">CENTER BIAS</div>
+          <div style="color:${ic.direction === 'CALL' ? 'var(--go)' : ic.direction === 'PUT' ? 'var(--stop)' : '#556'};font-weight:700">${ic.direction || '--'}</div>
+        </div>
+        <div style="background:rgba(0,0,0,.3);border-radius:6px;padding:6px;text-align:center">
+          <div style="color:#556;font-size:8px">STRUCTURE</div>
+          <div style="color:#60a5fa;font-weight:700">±${s.short_call_offset || 3} / w${s.wing_width || 5}</div>
+        </div>
+      </div>
+      <div style="margin-top:6px;font-size:9px;color:#667;text-align:center">
+        ${ic.detail || ''}  ·  TP @ ${s.tp_close_at_pct || 25}% credit  ·  SL @ ${s.sl_close_at_pct || 200}% credit
       </div>
     </div>
   `;

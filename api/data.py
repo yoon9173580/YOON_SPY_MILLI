@@ -19,6 +19,7 @@ try:
     from engines.score_engine import run_score_engine
     from lib.feature_flags import all_flags as _feature_flags_snapshot
     from lib.health import snapshot as _health_snapshot, log_error, log_warn
+    from engines.ic_signal import evaluate_ic_signal as _evaluate_ic_signal
 except Exception as e:
     import traceback
     INIT_ERROR = traceback.format_exc()
@@ -1389,6 +1390,44 @@ from lib.futures_meta import (
 )
 
 
+def _build_ic_signal(now, spy_p, spy_prev, spy_h, vix_p, pcts, score_result, vol_r):
+    """Glue: pull what evaluate_ic_signal needs out of the existing payload.
+
+    IC scoring (backtest_options_1min.score_day) was built for daily-resolution
+    inputs. We approximate intra-day by using spy_h's session OHLC.
+    """
+    try:
+        spy_open  = float(spy_h["Open"].iloc[0])  if spy_h is not None and not spy_h.empty else spy_p
+        spy_high  = float(spy_h["High"].max())    if spy_h is not None and not spy_h.empty else spy_p
+        spy_low   = float(spy_h["Low"].min())     if spy_h is not None and not spy_h.empty else spy_p
+    except Exception:
+        spy_open, spy_high, spy_low = spy_p, spy_p, spy_p
+
+    # Pull score-engine layer outputs to reuse VWAP, RSI, ADX, macro status
+    layers = score_result.get("layers", {})
+    rsi = layers.get("technical", {}).get("rsi")
+    adx = layers.get("regime", {}).get("details", {}).get("adx", {}).get("value")
+    macro = layers.get("macro_gate", {}).get("status")
+
+    # VWAP approximation from spy_h (volume-weighted typical price)
+    vwap_val = spy_p
+    if spy_h is not None and not spy_h.empty and "Volume" in spy_h.columns:
+        vol = spy_h["Volume"].astype(float)
+        if vol.sum() > 0:
+            tp = (spy_h["High"] + spy_h["Low"] + spy_h["Close"]) / 3.0
+            vwap_val = float((tp * vol).sum() / vol.sum())
+
+    return _evaluate_ic_signal(
+        now_et=now,
+        spy_open=spy_open, spy_close=spy_p,
+        spy_high=spy_high, spy_low=spy_low,
+        prev_close=spy_prev, vwap=vwap_val, vol_ratio=vol_r,
+        vix=vix_p,
+        qqq_pct=pcts.get("QQQ", 0.0),
+        iwm_pct=pcts.get("IWM", 0.0),
+        adx=adx, rsi=rsi,
+        macro_gate_status=macro,
+    )
 
 
 
@@ -2313,6 +2352,8 @@ class handler(BaseHTTPRequestHandler):
                 "paper_trading_stats": paper_trading_stats,
                 "portfolio_heat": portfolio_heat,
                 "tail_risk": tail_risk,
+                "ic_signal": _build_ic_signal(now, spy_p, spy_prev, spy_h, vix_p,
+                                              pcts_data, score_result, vol_r),
                 "feature_flags": _feature_flags_snapshot(),
                 "mes_specs": {
                     "instrument": "MES",

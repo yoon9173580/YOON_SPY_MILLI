@@ -180,6 +180,55 @@ class TestHealth:
         assert s2["process_uptime_sec"] >= s1["process_uptime_sec"]
 
 
+# ── ic_signal ────────────────────────────────────────────────────
+class TestICSignal:
+    def test_strong_score_fires(self):
+        from engines.ic_signal import evaluate_ic_signal
+        from datetime import datetime as dt
+        out = evaluate_ic_signal(
+            now_et=dt(2026, 5, 26, 10, 30),
+            spy_open=500, spy_close=502, spy_high=503, spy_low=499,
+            prev_close=499, vwap=500.5, vol_ratio=2.5,
+            vix=17, qqq_pct=0.5, iwm_pct=0.4,
+            adx=28, rsi=62,
+            macro_gate_status="CLEAR",
+        )
+        assert out["available"] is True
+        assert out["score"] >= 90
+        assert out["grade"] == "STRONG"
+        assert out["should_fire"] is True
+        assert out["block_reason"] is None
+
+    def test_macro_blocks_even_strong_score(self):
+        from engines.ic_signal import evaluate_ic_signal
+        from datetime import datetime as dt
+        out = evaluate_ic_signal(
+            now_et=dt(2026, 5, 26, 10, 30),
+            spy_open=500, spy_close=502, spy_high=503, spy_low=499,
+            prev_close=499, vwap=500.5, vol_ratio=2.5,
+            vix=17, qqq_pct=0.5, iwm_pct=0.4,
+            adx=28, rsi=62,
+            macro_gate_status="BLOCKED",
+        )
+        assert out["score"] >= 90
+        assert out["should_fire"] is False
+        assert out["block_reason"] == "MACRO_BLOCKED"
+
+    def test_high_vix_blocks_entry(self):
+        from engines.ic_signal import evaluate_ic_signal
+        from datetime import datetime as dt
+        out = evaluate_ic_signal(
+            now_et=dt(2026, 5, 26, 10, 30),
+            spy_open=500, spy_close=502, spy_high=503, spy_low=499,
+            prev_close=499, vwap=500.5, vol_ratio=2.5,
+            vix=28, qqq_pct=0.5, iwm_pct=0.4,
+            adx=28, rsi=62,
+            macro_gate_status="CLEAR",
+        )
+        assert out["should_fire"] is False
+        assert out["block_reason"] == "VIX_HIGH"
+
+
 # ── ml_weights enhanced update path ──────────────────────────────
 class TestMLWeights:
     def test_magnitude_aware_update(self):
