@@ -2,7 +2,12 @@
 
 ## Why paper trading first
 
-Backtest shows PF 6.86 / WR 90% / Max DD 13% on $1K capital. **Real PF likely 3.0-4.5** after gamma risk, IV expansion, pin risk, real fills. Forward test is non-negotiable.
+Backtest shows PF 6.86 / WR 90% / Max DD 13% on $1K capital. **Real PF likely 1.7-2.3** after stress testing for:
+- Vol regime: backtest's STRONG-only filter cherry-picked VIX 14-20 days. Stress test at VIX 22-25 still shows PF 3+, but VIX >30 days are deadly (2 of 2 lost in expanded sample).
+- Slippage: at realistic 3× modeled slippage (real 4-leg IC fills are 2-3× theoretical), PF drops to **2.39**.
+- Operational risk: order mistakes, panic exits, FOMO entries.
+
+Forward test is non-negotiable.
 
 **Goal**: 4 weeks of paper trading. Decide to go live (or kill) based on observed PF.
 
@@ -106,16 +111,18 @@ Use Google Sheets or simple CSV. Track these fields → calculate weekly PF.
 
 ### Go-live conditions (ALL must be true)
 - [ ] At least 12 paper trades executed (need sample)
-- [ ] **Observed PF ≥ 2.5**
-- [ ] **WR ≥ 75%**
+- [ ] **Observed PF ≥ 1.8** (revised down from 2.5 after stress testing)
+- [ ] **WR ≥ 70%** (revised from 75%)
 - [ ] Max single-trade loss ≤ theoretical max ($300/contract)
 - [ ] **No catastrophic days** (loss > 2× modeled max — would indicate gamma/IV blowout)
+- [ ] Real fill quality observed: net credit within 15% of theoretical mid
 
 ### Hard kill conditions (ANY one = stop)
 - 3 consecutive losses (early signal of regime change)
 - Single day loss > 3× theoretical max (modeling completely wrong)
 - 2 weeks with WR < 60%
-- Observed PF < 1.5 after 4 weeks
+- **Observed PF < 1.3 after 4 weeks** (revised from 1.5)
+- Any VIX-30+ day where signal fired and we lost — confirms strategy fails in extreme vol
 
 ### Go-live capital
 - Start: $5,000 cash (small enough to lose without pain)
@@ -136,11 +143,42 @@ Use Google Sheets or simple CSV. Track these fields → calculate weekly PF.
 
 ## Comparison reference (don't conflate these)
 
-| Strategy | Backtest PF | Live status |
+| Strategy | Backtest PF | Realistic PF | Live status |
+|---|---|---|---|
+| SPY 0DTE Debit Spread | 1.14 | <1.0 | **DEAD** — structurally limited |
+| **SPY 0DTE Iron Condor** | **6.86** | **1.7-2.3** | **PAPER TRADING** — this doc |
+| MES Futures | 4.04 | ~2.5-3 (est) | LIVE (per memory) |
+
+## Stress test findings (2026-05-26 session)
+
+### VIX regime breakdown (relaxed filter — what happens at each VIX bucket)
+
+| VIX entry | Trades | WR | PF | Behavior |
+|---|---|---|---|---|
+| ≥ 16 | 310 | 81% | 6.07 | normal |
+| ≥ 20 | 85 | 73% | 3.01 | still profitable |
+| ≥ 22 | 49 | 73% | 3.32 | still profitable |
+| ≥ 25 | 21 | 62% | 2.01 | thin but positive |
+| **≥ 30** | **2** | **0%** | **0.00** | **danger zone** |
+
+The STRONG-score filter naturally avoids VIX > 22 (qTrend hard cutoff + volChop penalty). Don't override this in live.
+
+### Slippage sensitivity (4-leg IC)
+
+| Slip multiplier | PF | Net PnL ($1K) |
 |---|---|---|
-| SPY 0DTE Debit Spread | 1.14 | **DEAD** — structurally limited |
-| **SPY 0DTE Iron Condor** | **6.86** | **PAPER TRADING** — this doc |
-| MES Futures | 4.04 | LIVE (per memory) |
+| 1× (theoretical) | 7.38 | +$6,304 |
+| **3× (realistic 4-leg fill)** | **2.39** | **+$2,342** |
+| 5× (gap-fill day) | 0.11 | -$6,702 |
+| 10× (catastrophic) | 0.0 | -$11,730 |
+
+**Implication**: order quality is critical. Use combo orders at limit, not 4 separate market orders. Re-evaluate if observed fills consistently >20% off theoretical mid.
+
+### Per-trade risk realities
+- Modeled max loss: $300/contract (wing $5 × 100 - credit $2)
+- Realized max single-trade loss in cherry-picked sample: $139 (37% of theoretical)
+- Realized max in stress-test sample (436 trades): $14,642 — but that was at large position size; per-contract still ~$300
+- **0DTE gap risk is real**: if SPY moves $5+ in one bar past entry, SL slippage will be brutal
 
 Iron Condor is **not** a replacement for MES futures system. They're different products, different strategies. Run both if both work.
 

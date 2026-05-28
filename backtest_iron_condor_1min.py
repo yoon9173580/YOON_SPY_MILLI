@@ -99,7 +99,8 @@ def simulate_ic_intraday(day_bars, K_sc, K_lc, K_sp, K_lp, credit_received,
 def run_ic_backtest(start_date=None, end_date=None, balance=2000.0,
                     min_score=90, tp_pct=0.50, sl_pct=1.00,
                     short_offset=3, wing_width=5,
-                    regime_filter="none"):
+                    regime_filter="none", min_grade="STRONG",
+                    slip_multiplier=1.0):
     """tp_pct: take profit at this fraction of credit captured (0.50 = close when half credit decayed)
        sl_pct: stop loss when close_cost = credit * (1 + sl_pct), capped by wing width
        short_offset: short strikes at ATM ± this (default 3)
@@ -184,7 +185,9 @@ def run_ic_backtest(start_date=None, end_date=None, balance=2000.0,
         }
         score, grade, _ = score_day(row_dict, vix_val, qqq_p, iwm_p, adx_v, rsi_v)
 
-        if score < min_score or grade != "STRONG":
+        grade_rank = {"STRONG": 3, "MODERATE": 2, "WEAK": 1, "NONE": 0, "LOCKED": 0}
+        min_rank = {"STRONG": 3, "MODERATE": 2, "WEAK": 1, "NONE": 0}.get(min_grade, 3)
+        if score < min_score or grade_rank.get(grade, 0) < min_rank:
             continue
 
         # Regime
@@ -214,7 +217,7 @@ def run_ic_backtest(start_date=None, end_date=None, balance=2000.0,
 
         spy_range_pct = ((spy_h - spy_l) / spy_o) * 100 if spy_o > 0 else 0
         slip_per = dynamic_slippage(vix_val, spy_range_pct)
-        slip4 = slip_per * 4  # 4 legs
+        slip4 = slip_per * 4 * slip_multiplier  # 4 legs × stress multiplier
 
         # Credit received (entry)
         credit_received = ic_value(S_entry, K_sc, K_lc, K_sp, K_lp, T_entry, r, iv)
@@ -342,6 +345,11 @@ if __name__ == "__main__":
     parser.add_argument("--short-offset", type=int,   default=3)
     parser.add_argument("--wing-width",   type=int,   default=5)
     parser.add_argument("--regime",       type=str,   default="none", choices=["none","sma50"])
+    parser.add_argument("--min-grade",    type=str,   default="STRONG",
+                        choices=["STRONG", "MODERATE", "WEAK", "NONE"],
+                        help="Minimum grade for entry (default STRONG = current). Lower = stress test")
+    parser.add_argument("--slip-mult",    type=float, default=1.0,
+                        help="Slippage multiplier (default 1.0). 5.0 = gap-fill stress scenario")
     args = parser.parse_args()
 
     start_date = args.dates[0] if len(args.dates) >= 1 else None
@@ -352,4 +360,6 @@ if __name__ == "__main__":
         min_score=args.min_score, tp_pct=args.tp, sl_pct=args.sl,
         short_offset=args.short_offset, wing_width=args.wing_width,
         regime_filter=args.regime,
+        min_grade=args.min_grade,
+        slip_multiplier=args.slip_mult,
     )
