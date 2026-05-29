@@ -34,6 +34,17 @@ DEFAULTS = {
     "ml_decay_to_one":                   True,   # 가중치 decay
     "trailing_stop_only":                True,   # BE 비활성, TRAIL만
     "tail_risk_monitor":                 True,   # VIX EWMA 모니터
+    # ── PERMISSIVE PAPER MODE ─────────────────────────────────────
+    # 활성화 시 진입 임계값을 완화 — 실거래 알고는 그대로 유지하되
+    # 페이퍼 트레이딩이 실제로 실행되는지 검증할 수 있게 함.
+    #   • 점수 75~110 (90~100 → 75~110)
+    #   • MODERATE grade도 진입 허용
+    #   • VIX 캡 30 (25 → 30)
+    #   • PRIME/GAMMA/REENTRY 시간대 모두 허용 (score>=8)
+    #   • SHORT 임계값 88 (93 → 88)
+    # 포지션 size는 self-protect: STRONG의 50%
+    # ENV로만 활성화: FF_PAPER_PERMISSIVE=1
+    "paper_permissive":                  False,
 }
 
 

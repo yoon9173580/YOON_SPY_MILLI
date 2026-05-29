@@ -719,6 +719,10 @@ function renderEntryDiagnostic(py) {
   const ed = py.entry_diagnostic;
   const el = document.getElementById('entryDiagnostic');
   if (!el || !ed) return;
+  const permissive = py.feature_flags && py.feature_flags.paper_permissive;
+  const modeBadge = permissive
+    ? `<span style="background:#3d2a0a;color:#f0a23a;padding:2px 8px;border-radius:10px;font-size:0.62rem;font-weight:700;margin-right:8px">⚠️ PERMISSIVE MODE</span>`
+    : '';
   const pT = ed.peak_today;
   const pA = ed.peak_all_time;
   const todayStr = (pT && pT.minute)
@@ -735,13 +739,13 @@ function renderEntryDiagnostic(py) {
     el.style.background = '#0c2b1f';
     el.style.borderColor = '#1e6b3f';
     el.style.color = '#3dd68c';
-    el.innerHTML = ed.human + todayStr + atStr + countStr;
+    el.innerHTML = modeBadge + ed.human + todayStr + atStr + countStr;
   } else {
     el.style.display = 'block';
     el.style.background = '#1a1a2e';
     el.style.borderColor = '#2a2a3e';
     el.style.color = '#8899cc';
-    el.innerHTML = `<span style="color:#556">진입 대기:</span> <span class="mono" style="color:var(--warn);font-weight:700">${ed.reason}</span>${todayStr}${atStr}${countStr}`;
+    el.innerHTML = modeBadge + `<span style="color:#556">진입 대기:</span> <span class="mono" style="color:var(--warn);font-weight:700">${ed.reason}</span>${todayStr}${atStr}${countStr}`;
   }
 }
 

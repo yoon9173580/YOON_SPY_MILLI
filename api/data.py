@@ -1338,6 +1338,15 @@ def _entry_check(grade, direction_bias, score_result, portfolio=None, now=None):
     entries aren't firing. Previously this returned a bare bool which
     left "why didn't I enter?" silent.
 
+    PERMISSIVE 모드 (FF_PAPER_PERMISSIVE=1):
+      • Score 75-110 (vs 90-100 strict)
+      • STRONG or MODERATE grade (vs STRONG only)
+      • VIX cap 30 (vs 25)
+      • Time score >= 8 (REENTRY/TRANSITION 허용)
+      • SHORT score >= 88 (vs 93)
+      • 위치 크기는 _calc_contracts에서 50% 축소
+    Reason 태그에 PERMISSIVE_ 접두사 — production 시그널과 구분.
+
     3-year backtest revealed:
       • Score 90-100 is the sweet spot (WR 68-80%)
       • Score >100 hurts (WR drops to 50-61%)
@@ -1345,6 +1354,10 @@ def _entry_check(grade, direction_bias, score_result, portfolio=None, now=None):
       • SHORT trades only 7 in 3 years — require stronger setup
       • VIX > 25 is insufficiently tested — block
     """
+    from lib.feature_flags import is_enabled
+    permissive = is_enabled("paper_permissive")
+    p_tag = "PERMISSIVE_" if permissive else ""
+
     layers = score_result.get("layers", {})
 
     # Grade=LOCKED은 여러 원인 — 가장 정확한 사유를 우선 반환.
@@ -1362,33 +1375,46 @@ def _entry_check(grade, direction_bias, score_result, portfolio=None, now=None):
     if layers.get("risk", {}).get("passed") is False:
         return False, "RISK_LOCKOUT"
 
-    if grade != "STRONG":
-        return False, f"GRADE_{grade or 'NONE'}_NOT_STRONG"
+    # Grade gate — STRONG only, or STRONG+MODERATE in permissive
+    if permissive:
+        if grade not in ("STRONG", "MODERATE"):
+            return False, f"GRADE_{grade or 'NONE'}_NOT_STRONG_OR_MOD"
+    else:
+        if grade != "STRONG":
+            return False, f"GRADE_{grade or 'NONE'}_NOT_STRONG"
 
+    # Score band
     total_score = score_result.get("total_score", 0)
-    if total_score > 100:
-        return False, f"SCORE_{total_score}_OVER_100"
-    if total_score < 90:
-        return False, f"SCORE_{total_score}_UNDER_90"
+    score_lo, score_hi = (75, 110) if permissive else (90, 100)
+    if total_score > score_hi:
+        return False, f"SCORE_{total_score}_OVER_{score_hi}"
+    if total_score < score_lo:
+        return False, f"SCORE_{total_score}_UNDER_{score_lo}"
 
+    # Time window
     tw_score = layers.get("time_window", {}).get("score", 0)
-    if tw_score < 20:
+    tw_min = 8 if permissive else 20
+    if tw_score < tw_min:
         tw_label = layers.get("time_window", {}).get("window", "?")
-        return False, f"TIME_WINDOW_{tw_label}_SCORE_{tw_score}<20"
+        return False, f"TIME_WINDOW_{tw_label}_SCORE_{tw_score}<{tw_min}"
 
     if direction_bias not in ("LONG", "SHORT"):
         return False, f"DIRECTION_{direction_bias or 'NONE'}"
 
-    if direction_bias == "SHORT" and total_score < 93:
-        return False, f"SHORT_SCORE_{total_score}<93"
+    # SHORT min score
+    short_min = 88 if permissive else 93
+    if direction_bias == "SHORT" and total_score < short_min:
+        return False, f"SHORT_SCORE_{total_score}<{short_min}"
 
+    # VIX cap
     vix_val = layers.get("regime", {}).get("details", {}).get("vix", {}).get("detail", "")
     try:
         vix_num = float(vix_val.split()[1]) if vix_val.startswith("VIX ") else None
     except (IndexError, ValueError):
         vix_num = None
-    if vix_num is not None and vix_num > 25.0:
-        return False, f"VIX_{vix_num:.1f}>25"
+    vix_cap = 30.0 if permissive else 25.0
+    if vix_num is not None and vix_num > vix_cap:
+        return False, f"VIX_{vix_num:.1f}>{vix_cap:.0f}"
 
     if portfolio:
         anchor = float(portfolio.get("daily_start_value")
@@ -1405,7 +1431,7 @@ def _entry_check(grade, direction_bias, score_result, portfolio=None, now=None):
     if portfolio and len(portfolio.get("positions", {})) >= MAX_OPEN_TRADES:
         return False, f"ALREADY_{MAX_OPEN_TRADES}_OPEN"
 
-    return True, "ENTRY_OK"
+    return True, f"{p_tag}ENTRY_OK"
 
 
 def _entry_criteria_met(grade, direction_bias, score_result, portfolio=None, now=None):
@@ -2101,8 +2127,12 @@ class handler(BaseHTTPRequestHandler):
                 tp_points = sl_points * rr_ratio
                 
                 # Position sizing
+                from lib.feature_flags import is_enabled as _ff
+                # PERMISSIVE 모드: 정상 STRONG 신호 대비 50% 크기로 축소
+                # (validation 목적의 진입이므로 자본 보호)
+                risk_mult = 0.5 if _ff("paper_permissive") else 1.0
                 risk_per_contract = sl_points * ES_MULTIPLIER + ES_COMMISSION_RT
-                max_risk = cash * RISK_PCT
+                max_risk = cash * RISK_PCT * risk_mult
                 max_by_margin = int(cash * 0.95 / ES_DAY_MARGIN)
                 contracts = min(max(1, int(max_risk / risk_per_contract)), max_by_margin)
                 
@@ -2116,6 +2146,8 @@ class handler(BaseHTTPRequestHandler):
                         sl_price = round(entry_price + sl_points, 2)
                         tp_price = round(entry_price - tp_points, 2)
                     
+                    is_permissive = _ff("paper_permissive")
+                    mode_tag = "PERMISSIVE" if is_permissive else "STRICT"
                     trade_id = f"{today_str}-{now.strftime('%H%M%S')}-MES-{es_direction}"
                     new_pos = _ensure_trade_id({
                         "trade_id": trade_id, "date": today_str, "status": "OPEN",
@@ -2129,6 +2161,7 @@ class handler(BaseHTTPRequestHandler):
                         "entry_ts": now.strftime("%Y-%m-%d %H:%M:%S"),
                         "time": now.strftime("%H:%M"),
                         "score": normalized, "grade": signal["grade"],
+                        "mode": mode_tag,
                         "unrealized_pnl": 0.0, "unrealized_pnl_pct": 0.0,
                     })
                     portfolio["positions"][today_str] = new_pos
