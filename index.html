@@ -2302,12 +2302,19 @@ function startSSEStream() {
       } catch(_) {}
     });
     es.onerror = () => {
-      // Vercel closes the stream at the 55s deadline. Reconnect on next idle.
+      // Vercel closes the stream at the 55s deadline (normal). On real
+      // errors (server down), exponential backoff prevents hammering.
       try { es.close(); } catch(_) {}
       window.__sseStream = null;
-      // Reopen after a short delay if we're still authenticated
       if (sessionStorage.getItem('hannae_auth_ok')) {
-        setTimeout(startSSEStream, 2000);
+        const tries = (window.__sseRetryCount = (window.__sseRetryCount || 0) + 1);
+        // 2s, 4s, 8s, 16s, capped at 30s
+        const delay = Math.min(2000 * Math.pow(2, tries - 1), 30000);
+        setTimeout(() => {
+          startSSEStream();
+          // Reset retry count if we get past the deadline successfully
+          setTimeout(() => { window.__sseRetryCount = 0; }, 60000);
+        }, delay);
       }
     };
   } catch(_) {
@@ -2372,7 +2379,9 @@ async function loadData() {
       if (etag) window.__lastEtag = etag;
 
       const data = await r.json();
-      data.latency_ms = Math.round((data.latency_ms||0) + (performance.now()-t0));
+      // Cap displayed latency at 99999ms so a cold-start spike doesn't
+      // render as e.g. '32847ms' (technically true but pollutes the UI).
+      data.latency_ms = Math.min(99999, Math.round((data.latency_ms||0) + (performance.now()-t0)));
       render(data);
       window.__lastServerRenderAt = performance.now();
       startLocalClock();

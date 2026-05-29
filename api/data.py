@@ -2485,7 +2485,15 @@ class handler(BaseHTTPRequestHandler):
                 "indices": indices_out, "mag7": mag7_out,
                 "gme_data": gme_data,
                 "futures_multi": futures_out,
-                "paper_trading": {k: v for k, v in portfolio.items() if not k.startswith("_") and k not in ("storage_type", "revision", "last_saved")},
+                # Heavy diagnostic fields (score_samples, daily_peaks) are
+                # excluded — their summarized stats are already in
+                # entry_diagnostic. Saves ~256 KB per response when buffer
+                # is full (2000 samples × ~130 bytes/sample).
+                "paper_trading": {k: v for k, v in portfolio.items()
+                                  if not k.startswith("_")
+                                  and k not in ("storage_type", "revision", "last_saved",
+                                                 "score_samples", "daily_peaks",
+                                                 "peak_score_today_internal")},
                 "backtest_summary": BACKTEST_SUMMARY,
                 "paper_trading_stats": paper_trading_stats,
                 "portfolio_heat": portfolio_heat,
