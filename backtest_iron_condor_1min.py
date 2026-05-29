@@ -100,7 +100,16 @@ def run_ic_backtest(start_date=None, end_date=None, balance=2000.0,
                     min_score=90, tp_pct=0.50, sl_pct=1.00,
                     short_offset=3, wing_width=5,
                     regime_filter="none", min_grade="STRONG",
-                    slip_multiplier=1.0):
+                    slip_multiplier=1.0, ml_model_path=None,
+                    ml_threshold=None):
+    # ML filter setup (optional)
+    ml_bundle = None
+    if ml_model_path:
+        import joblib
+        ml_bundle = joblib.load(ml_model_path)
+        if ml_threshold is None:
+            ml_threshold = ml_bundle.get("threshold", 0.5)
+        print(f"  [ML] loaded {ml_model_path} (trained on n={ml_bundle.get('trained_on_n')}, threshold={ml_threshold:.2f})")
     """tp_pct: take profit at this fraction of credit captured (0.50 = close when half credit decayed)
        sl_pct: stop loss when close_cost = credit * (1 + sl_pct), capped by wing width
        short_offset: short strikes at ATM ± this (default 3)
@@ -204,6 +213,45 @@ def run_ic_backtest(start_date=None, end_date=None, balance=2000.0,
         entry_bar = entry_bars.iloc[0]
         S_entry = float(entry_bar["close"])
 
+        # ── Pre-10:30 intraday features (leak-free for ML) ──
+        pre_bars = day_bars[(day_bars["time_of_day"] >= SESSION_OPEN)
+                          & (day_bars["time_of_day"] <= ENTRY_TIME)]
+        if len(pre_bars) >= 5:
+            pre_open  = float(pre_bars.iloc[0]["open"])
+            pre_high  = float(pre_bars["high"].max())
+            pre_low   = float(pre_bars["low"].min())
+            pre_close = float(pre_bars.iloc[-1]["close"])
+            pre_vol   = float(pre_bars["volume"].sum())
+            pre_range_pct  = ((pre_high - pre_low) / pre_open) * 100.0 if pre_open > 0 else 0.0
+            pre_change_pct = ((pre_close - pre_open) / pre_open) * 100.0 if pre_open > 0 else 0.0
+        else:
+            pre_open = pre_high = pre_low = pre_close = pre_vol = 0.0
+            pre_range_pct = pre_change_pct = 0.0
+        gap_pct = ((spy_o / prev_close) - 1.0) * 100.0 if prev_close > 0 else 0.0
+
+        # ── ML filter (optional, leak-free — only pre-entry features) ──
+        if ml_bundle is not None:
+            import pandas as _pd
+            feat_dict = {
+                "feat_gap_pct": gap_pct,
+                "feat_pre_range_pct": pre_range_pct,
+                "feat_pre_change_pct": pre_change_pct,
+                "feat_pre_vol": pre_vol,
+                "feat_rsi": rsi_v if rsi_v else ml_bundle["median_impute"].get("feat_rsi", 50.0),
+                "feat_adx": adx_v if adx_v else ml_bundle["median_impute"].get("feat_adx", 20.0),
+                "feat_vol_ratio": vol_ratio,
+                "feat_qqq_pct": qqq_p,
+                "feat_iwm_pct": iwm_p,
+                "feat_dow": _pd.Timestamp(date).dayofweek,
+                "vix": vix_val,
+                "score": score,
+            }
+            feat_vec = _pd.DataFrame([[feat_dict[c] for c in ml_bundle["feature_cols"]]],
+                                     columns=ml_bundle["feature_cols"])
+            loss_prob = ml_bundle["model"].predict_proba(feat_vec)[0, 1]
+            if loss_prob > ml_threshold:
+                continue  # ML predicts loss — skip this trade
+
         iv = vix_val / 100.0
 
         # Strikes
@@ -266,6 +314,17 @@ def run_ic_backtest(start_date=None, end_date=None, balance=2000.0,
             "vix": round(vix_val, 1),
             "exit_type": exit_note,
             "exit_time": str(exit_time) if exit_time else "",
+            # ML features (pre-10:30, leak-free)
+            "feat_gap_pct": round(gap_pct, 3),
+            "feat_pre_range_pct": round(pre_range_pct, 3),
+            "feat_pre_change_pct": round(pre_change_pct, 3),
+            "feat_pre_vol": round(pre_vol, 0),
+            "feat_rsi": round(rsi_v, 1) if rsi_v else None,
+            "feat_adx": round(adx_v, 1) if adx_v else None,
+            "feat_vol_ratio": round(vol_ratio, 3),
+            "feat_qqq_pct": round(qqq_p, 3),
+            "feat_iwm_pct": round(iwm_p, 3),
+            "feat_dow": pd.Timestamp(date).dayofweek,
         })
 
         sk = f"{K_sp}/{K_sc}"
@@ -350,6 +409,10 @@ if __name__ == "__main__":
                         help="Minimum grade for entry (default STRONG = current). Lower = stress test")
     parser.add_argument("--slip-mult",    type=float, default=1.0,
                         help="Slippage multiplier (default 1.0). 5.0 = gap-fill stress scenario")
+    parser.add_argument("--ml-model",     type=str,   default=None,
+                        help="Path to joblib ML model. If set, skips trades with predicted loss probability > threshold")
+    parser.add_argument("--ml-threshold", type=float, default=None,
+                        help="ML loss-probability threshold for skip (default = model's saved threshold)")
     args = parser.parse_args()
 
     start_date = args.dates[0] if len(args.dates) >= 1 else None
@@ -362,4 +425,6 @@ if __name__ == "__main__":
         regime_filter=args.regime,
         min_grade=args.min_grade,
         slip_multiplier=args.slip_mult,
+        ml_model_path=args.ml_model,
+        ml_threshold=args.ml_threshold,
     )
