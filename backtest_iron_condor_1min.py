@@ -97,9 +97,9 @@ def simulate_ic_intraday(day_bars, K_sc, K_lc, K_sp, K_lp, credit_received,
 
 
 def run_ic_backtest(start_date=None, end_date=None, balance=500000.0,
-                    min_score=90, tp_pct=0.50, sl_pct=1.00,
+                    min_score=85, tp_pct=0.50, sl_pct=1.00,
                     short_offset=3, wing_width=5,
-                    regime_filter="none", min_grade="STRONG",
+                    regime_filter="none", min_grade="MODERATE",
                     slip_multiplier=1.0, ml_model_path=None,
                     ml_threshold=None, max_contracts=20):
     # ML filter setup (optional)
@@ -400,15 +400,15 @@ if __name__ == "__main__":
     parser.add_argument("dates", nargs="*")
     parser.add_argument("--balance",      type=float, default=500000.0)
     parser.add_argument("--max-contracts", type=int, default=20, help="Liquidity cap on 0DTE IC contracts (default 20)")
-    parser.add_argument("--min-score",    type=int,   default=90)
+    parser.add_argument("--min-score",    type=int,   default=85)
     parser.add_argument("--tp",           type=float, default=0.50, help="Take profit at 1 - tp_pct of credit (default 0.50 = close at half credit)")
     parser.add_argument("--sl",           type=float, default=1.00, help="Stop loss when cost = (1+sl)*credit, capped at wing")
     parser.add_argument("--short-offset", type=int,   default=3)
     parser.add_argument("--wing-width",   type=int,   default=5)
     parser.add_argument("--regime",       type=str,   default="none", choices=["none","sma50"])
-    parser.add_argument("--min-grade",    type=str,   default="STRONG",
+    parser.add_argument("--min-grade",    type=str,   default="MODERATE",
                         choices=["STRONG", "MODERATE", "WEAK", "NONE"],
-                        help="Minimum grade for entry (default STRONG = current). Lower = stress test")
+                        help="Minimum grade for entry (default MODERATE — freq tuning). STRONG = old conservative")
     parser.add_argument("--slip-mult",    type=float, default=1.0,
                         help="Slippage multiplier (default 1.0). 5.0 = gap-fill stress scenario")
     parser.add_argument("--ml-model",     type=str,   default=None,

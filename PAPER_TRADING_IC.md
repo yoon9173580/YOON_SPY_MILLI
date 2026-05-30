@@ -24,7 +24,7 @@ Forward test is non-negotiable.
 ### 10:30 AM ET — Score check
 - [ ] Open Pine MILLI v3-0 IC (or backtest signal table)
 - [ ] Read STRONG / score from chart panel
-- [ ] If score < 90 or grade not STRONG → **no trade**
+- [ ] If score < 85 or grade is WEAK/NONE/LOCKED → **no trade** (freq-tuned: STRONG *or* MODERATE with score ≥ 85 both qualify)
 - [ ] If LOCKED → **no trade**
 
 ### 10:30 AM — Entry (if signal)
@@ -141,7 +141,7 @@ Use Google Sheets or simple CSV. Track these fields → calculate weekly PF.
 
 ## Common failure modes (learn from these)
 
-1. **FOMO entries**: Trading on MODERATE score "because it looked good" — stick to STRONG only
+1. **FOMO entries**: Trading on score < 85 or WEAK grade "because it looked good" — entry gate is score ≥ 85 AND grade STRONG/MODERATE. Don't chase below that.
 2. **Early close on red**: SPY hits short strike intraday, you panic close at -50%, then SPY reverses by EOD. **Hold to TP/SL/EOD only**
 3. **Size creep**: Wins → bigger size → one bad day wipes profits. **5% rule is non-negotiable**
 4. **Skip the journal**: Without data, you can't tell signal-vs-noise. **Log every trade**

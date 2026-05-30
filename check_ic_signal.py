@@ -85,7 +85,8 @@ def compute_score_for_today(spy, qqq, iwm, vix):
         "vol_ratio": round(row_dict["VolRatio"], 2),
         "score": score,
         "grade": grade,
-        "should_fire": score >= 90 and grade == "STRONG",
+        # v2 freq tuning: score>=85 MODERATE+ (was 90 STRONG). 2x frequency, PF held ~7.0.
+        "should_fire": score >= 85 and grade in ("STRONG", "MODERATE"),
     }
 
 

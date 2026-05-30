@@ -1,3 +1,5 @@
 check_ts_et,trading_date,spy_open,spy_close,spy_pct,vix,rsi,adx,vol_ratio,score,grade,should_fire,ic_atm,ic_sell_call,ic_buy_call,ic_sell_put,ic_buy_put
 2026-05-28 01:09:36,2026-05-27,750.88,750.46,-0.02,18.0,65.8,41.4,0.88,86,MODERATE,False,,,,,
 2026-05-28 01:10:06,2026-05-27,750.88,750.46,-0.02,18.0,65.8,41.4,0.88,86,MODERATE,False,,,,,
+2026-05-30 09:51:36,2026-05-29,755.9,756.48,0.25,18.0,68.8,40.7,1.16,79,MODERATE,False,,,,,
+2026-05-30 16:24:41,2026-05-29,755.9,756.48,0.25,18.0,68.8,40.7,1.16,79,MODERATE,False,,,,,
