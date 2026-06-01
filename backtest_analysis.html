@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MES Futures Backtest Analysis</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#06070b;--surface:rgba(16,18,27,0.9);--surface2:rgba(22,25,38,0.95);
+  --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.12);
+  --muted:#6b7084;--text:#e4e6ef;
+  --green:#00e87b;--red:#ff4d6a;--yellow:#ffb627;--blue:#5b8cff;
+  --purple:#a78bfa;--cyan:#22d3ee;--orange:#fb923c;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:"Inter",system-ui,sans-serif;min-height:100vh}
+body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;
+  background:radial-gradient(circle at 25% 20%,rgba(91,140,255,0.05) 0%,transparent 50%),
+             radial-gradient(circle at 75% 80%,rgba(0,232,123,0.03) 0%,transparent 50%);
+  pointer-events:none;z-index:0}
+.wrap{max-width:1280px;margin:0 auto;padding:1.5rem;position:relative;z-index:1}
+
+/* Header */
+.header{text-align:center;margin-bottom:2rem}
+.header h1{font-size:1.8rem;font-weight:800;letter-spacing:-0.5px;
+  background:linear-gradient(135deg,#5b8cff,#00e87b);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header p{color:var(--muted);font-size:0.85rem;margin-top:0.4rem}
+.badge{display:inline-block;background:rgba(91,140,255,0.15);border:1px solid rgba(91,140,255,0.3);
+  color:#5b8cff;border-radius:20px;padding:0.2rem 0.8rem;font-size:0.72rem;margin-top:0.5rem}
+
+/* Cards Row */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.8rem;margin-bottom:1.5rem}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:1rem 1.2rem;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:2px 2px 0 0}
+.card.green::before{background:var(--green)}
+.card.red::before{background:var(--red)}
+.card.blue::before{background:var(--blue)}
+.card.purple::before{background:var(--purple)}
+.card.yellow::before{background:var(--yellow)}
+.card.cyan::before{background:var(--cyan)}
+.card.orange::before{background:var(--orange)}
+.card-label{font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem}
+.card-value{font-size:1.6rem;font-weight:800;letter-spacing:-1px;line-height:1}
+.card-sub{font-size:0.72rem;color:var(--muted);margin-top:0.3rem}
+
+/* Chart containers */
+.chart-section{margin-bottom:1.5rem}
+.chart-section h2{font-size:0.9rem;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:0.08em;margin-bottom:0.8rem;padding-left:0.2rem}
+.chart-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:1.2rem}
+.chart-box canvas{max-height:280px}
+
+/* Grid layouts */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+.grid-2-1{display:grid;grid-template-columns:2fr 1fr;gap:1rem}
+
+@media(max-width:768px){
+  .grid-2,.grid-3,.grid-2-1{grid-template-columns:1fr}
+  .cards{grid-template-columns:repeat(2,1fr)}
+  .card-value{font-size:1.3rem}
+}
+
+/* Trade table */
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+.table-scroll{overflow-x:auto;max-height:400px;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-size:0.78rem}
+thead th{background:rgba(255,255,255,0.03);padding:0.6rem 0.8rem;text-align:left;
+  font-size:0.65rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;
+  position:sticky;top:0;z-index:2;border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid rgba(255,255,255,0.03);transition:background 0.15s}
+tbody tr:hover{background:rgba(255,255,255,0.03)}
+td{padding:0.5rem 0.8rem;white-space:nowrap}
+.pnl-pos{color:var(--green);font-weight:600}
+.pnl-neg{color:var(--red);font-weight:600}
+.badge-sm{display:inline-block;padding:0.1rem 0.45rem;border-radius:8px;font-size:0.65rem;font-weight:700}
+.dir-long{background:rgba(0,232,123,0.15);color:var(--green)}
+.dir-short{background:rgba(255,77,106,0.15);color:var(--red)}
+.exit-eod{background:rgba(91,140,255,0.15);color:var(--blue)}
+.exit-sl{background:rgba(255,77,106,0.15);color:var(--red)}
+.exit-trail{background:rgba(34,211,238,0.15);color:var(--cyan)}
+.exit-be{background:rgba(255,182,39,0.15);color:var(--yellow)}
+
+/* Section separator */
+.sep{border:none;border-top:1px solid var(--border);margin:1rem 0}
+
+/* Stats mini-table */
+.stat-row{display:flex;justify-content:space-between;align-items:center;padding:0.45rem 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.stat-row:last-child{border-bottom:none}
+.stat-name{font-size:0.75rem;color:var(--muted)}
+.stat-val{font-size:0.82rem;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <h1>MES Futures Backtest Analysis</h1>
+    <p>Micro E-mini S&amp;P 500 · Pro Strategy v4 (ATR+NR7+Pullback+Kelly)</p>
+    <span class="badge">2023-03-25 ~ 2026-02-09 · $500K Starting Capital</span>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="cards" id="summary-cards"></div>
+
+  <!-- Equity Curve + Drawdown -->
+  <div class="chart-section">
+    <h2>잔고 추이 &amp; 드로우다운</h2>
+    <div class="grid-2-1">
+      <div class="chart-box"><canvas id="equityChart"></canvas></div>
+      <div class="chart-box"><canvas id="ddChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Monthly PnL -->
+  <div class="chart-section">
+    <h2>월별 손익 (P&amp;L)</h2>
+    <div class="chart-box"><canvas id="monthlyChart" style="max-height:220px"></canvas></div>
+  </div>
+
+  <!-- Analysis Grid -->
+  <div class="chart-section">
+    <h2>세부 분석</h2>
+    <div class="grid-2">
+      <div class="chart-box"><canvas id="exitChart"></canvas></div>
+      <div class="chart-box"><canvas id="dirChart"></canvas></div>
+    </div>
+  </div>
+  <div class="chart-section">
+    <div class="grid-2">
+      <div class="chart-box"><canvas id="vixChart"></canvas></div>
+      <div class="chart-box"><canvas id="scoreChart"></canvas></div>
+    </div>
+  </div>
+  <div class="chart-section">
+    <div class="grid-2">
+      <div class="chart-box"><canvas id="pnlDistChart"></canvas></div>
+      <div class="chart-box">
+        <div style="padding:0.4rem 0">
+          <div style="font-size:0.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.8rem">연도별 성과</div>
+          <div id="yearly-stats"></div>
+        </div>
+        <hr class="sep">
+        <div style="font-size:0.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.8rem;margin-top:0.8rem">리스크 지표</div>
+        <div id="risk-stats"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trade Log -->
+  <div class="chart-section">
+    <h2>거래 내역 (55건)</h2>
+    <div class="table-wrap">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>날짜</th><th>방향</th><th>전략</th><th>진입가</th><th>청산가</th>
+              <th>청산유형</th><th>포인트</th><th>계약수</th><th>손익</th><th>잔고</th><th>VIX</th><th>Score</th>
+            </tr>
+          </thead>
+          <tbody id="trade-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ──────────────────────────────────────────────
+// Embedded backtest data
+// ──────────────────────────────────────────────
+const RAW = {"model":"MES Futures Pro Strategy v4 (ATR+NR7+Pullback+Kelly, live params)","period":"2023-03-25 ~ 2026-03-25","product":"Micro E-mini S&P 500 (MES) [$5/pt]","strategy":"ATR SL=1.5x + 15:30 Exit | Risk=1.5%","start_balance":500000.0,"end_balance":783239.0,"total_pnl":283239.0,"pnl_pct":56.6,"annual_return":16.1,"total_trades":55,"wins":33,"losses":22,"win_rate":60.0,"avg_win":13724.87,"avg_loss":-7712.81,"profit_factor":2.67,"max_drawdown":3.7,"nr7_boosted_trades":0,"pullback_boosted_trades":0,"trades":[{"date":"2023-04-03","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4156.0,"exit_price":4150.0,"exit_type":"SL","exit_time":"10:37","sl_points":6.0,"atr":4.0,"point_pnl":-6.0,"contracts":227,"pnl":-7491.0,"balance":492509.0,"vix":18.5},{"date":"2023-04-27","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4111.75,"exit_price":4153.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":37.38,"point_pnl":41.25,"contracts":94,"pnl":19105.5,"balance":511614.5,"vix":17.0},{"date":"2023-05-17","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4137.25,"exit_price":4168.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":45.46,"point_pnl":31.5,"contracts":98,"pnl":15141.0,"balance":526755.5,"vix":16.9},{"date":"2023-06-13","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4361.25,"exit_price":4368.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":34.61,"point_pnl":7.5,"contracts":101,"pnl":3484.5,"balance":530240.0,"vix":14.6},{"date":"2023-07-05","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4487.25,"exit_price":4489.25,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":29.88,"point_pnl":2.0,"contracts":101,"pnl":707.0,"balance":530947.0,"vix":14.2},{"date":"2023-08-09","score":91,"boosted_score":91,"boost_reasons":"","direction":"SHORT","strategy":"TREND_FOLLOW","entry_price":4513.5,"exit_price":4513.25,"exit_type":"BE","exit_time":"14:16","sl_points":15.0,"atr":42.89,"point_pnl":0.25,"contracts":102,"pnl":-178.5,"balance":530768.5,"vix":16.0},{"date":"2023-08-29","score":89,"boosted_score":89,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4474.0,"exit_price":4506.25,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":51.16,"point_pnl":32.25,"contracts":102,"pnl":16141.5,"balance":546910.0,"vix":14.4},{"date":"2023-09-18","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4498.25,"exit_price":4498.5,"exit_type":"BE","exit_time":"14:54","sl_points":15.0,"atr":30.75,"point_pnl":0.25,"contracts":105,"pnl":-183.75,"balance":546726.25,"vix":14.0},{"date":"2023-10-09","score":89,"boosted_score":89,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4329.5,"exit_price":4366.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":56.09,"point_pnl":37.25,"contracts":105,"pnl":19241.25,"balance":565967.5,"vix":17.7},{"date":"2023-10-31","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4187.0,"exit_price":4209.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":53.89,"point_pnl":22.75,"contracts":108,"pnl":11961.0,"balance":577928.5,"vix":18.1},{"date":"2023-11-01","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4241.25,"exit_price":4226.25,"exit_type":"SL","exit_time":"12:39","sl_points":15.0,"atr":55.89,"point_pnl":-15.0,"contracts":111,"pnl":-8658.0,"balance":569270.5,"vix":16.9},{"date":"2024-01-04","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":4754.5,"exit_price":4739.5,"exit_type":"SL","exit_time":"14:45","sl_points":15.0,"atr":38.59,"point_pnl":-15.0,"contracts":109,"pnl":-8502.0,"balance":560768.5,"vix":14.1},{"date":"2024-01-17","score":89,"boosted_score":89,"boost_reasons":"","direction":"SHORT","strategy":"TREND_FOLLOW","entry_price":4766.0,"exit_price":4758.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":41.84,"point_pnl":8.0,"contracts":107,"pnl":3959.0,"balance":564727.5,"vix":14.8},{"date":"2024-02-14","score":89,"boosted_score":89,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5006.5,"exit_price":4991.5,"exit_type":"SL","exit_time":"10:55","sl_points":15.0,"atr":45.86,"point_pnl":-15.0,"contracts":108,"pnl":-8424.0,"balance":556303.5,"vix":14.4},{"date":"2024-02-22","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5076.0,"exit_price":5099.25,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":40.96,"point_pnl":23.25,"contracts":106,"pnl":12004.5,"balance":568308.0,"vix":14.5},{"date":"2024-03-07","score":89,"boosted_score":89,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5153.5,"exit_price":5158.25,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":42.54,"point_pnl":4.75,"contracts":109,"pnl":2261.75,"balance":570569.75,"vix":14.4},{"date":"2024-03-18","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5237.25,"exit_price":5222.25,"exit_type":"SL","exit_time":"12:50","sl_points":15.0,"atr":51.61,"point_pnl":-15.0,"contracts":109,"pnl":-8502.0,"balance":562067.75,"vix":14.3},{"date":"2024-04-12","score":89,"boosted_score":89,"boost_reasons":"","direction":"SHORT","strategy":"TREND_FOLLOW","entry_price":5198.0,"exit_price":5154.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":56.84,"point_pnl":44.0,"contracts":108,"pnl":23436.0,"balance":585503.75,"vix":17.3},{"date":"2024-04-23","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5095.25,"exit_price":5104.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":70.27,"point_pnl":9.25,"contracts":112,"pnl":4844.0,"balance":590347.75,"vix":15.7},{"date":"2024-07-24","score":93,"boosted_score":93,"boost_reasons":"","direction":"SHORT","strategy":"TREND_FOLLOW","entry_price":5519.5,"exit_price":5475.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":54.77,"point_pnl":44.0,"contracts":113,"pnl":24521.0,"balance":614868.75,"vix":18.0},{"date":"2024-07-26","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5491.75,"exit_price":5476.75,"exit_type":"SL","exit_time":"10:32","sl_points":15.0,"atr":66.75,"point_pnl":-15.0,"contracts":118,"pnl":-9204.0,"balance":605664.75,"vix":16.4},{"date":"2024-08-13","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5413.0,"exit_price":5450.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":102.89,"point_pnl":37.5,"contracts":116,"pnl":21402.0,"balance":627066.75,"vix":18.1},{"date":"2024-09-17","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5669.0,"exit_price":5654.0,"exit_type":"SL","exit_time":"12:12","sl_points":15.0,"atr":66.3,"point_pnl":-15.0,"contracts":120,"pnl":-9360.0,"balance":617706.75,"vix":17.6},{"date":"2024-09-23","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5779.0,"exit_price":5764.0,"exit_type":"SL","exit_time":"12:15","sl_points":15.0,"atr":64.25,"point_pnl":-15.0,"contracts":118,"pnl":-9204.0,"balance":608502.75,"vix":15.9},{"date":"2024-10-16","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5872.25,"exit_price":5886.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":53.93,"point_pnl":14.5,"contracts":117,"pnl":8131.5,"balance":616634.25,"vix":19.6},{"date":"2024-10-29","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5858.5,"exit_price":5881.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":45.77,"point_pnl":23.25,"contracts":118,"pnl":13363.5,"balance":629997.75,"vix":19.3},{"date":"2024-11-19","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5900.5,"exit_price":5933.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":58.82,"point_pnl":32.5,"contracts":121,"pnl":19299.5,"balance":649297.25,"vix":16.4},{"date":"2024-11-28","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6030.0,"exit_price":6030.25,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":57.86,"point_pnl":0.25,"contracts":124,"pnl":-217.0,"balance":649080.25,"vix":18.0},{"date":"2025-01-27","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6041.0,"exit_price":6026.0,"exit_type":"SL","exit_time":"11:06","sl_points":15.0,"atr":66.93,"point_pnl":-15.0,"contracts":124,"pnl":-9672.0,"balance":639408.25,"vix":17.9},{"date":"2025-02-04","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6051.0,"exit_price":6057.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":75.34,"point_pnl":6.75,"contracts":122,"pnl":3751.5,"balance":643159.75,"vix":17.2},{"date":"2025-02-12","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6053.25,"exit_price":6074.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":78.89,"point_pnl":20.75,"contracts":123,"pnl":12392.25,"balance":655552.0,"vix":15.9},{"date":"2025-02-13","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6099.0,"exit_price":6132.25,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":75.27,"point_pnl":33.25,"contracts":126,"pnl":20569.5,"balance":676121.5,"vix":15.1},{"date":"2025-03-25","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5831.0,"exit_price":5816.0,"exit_type":"SL","exit_time":"12:30","sl_points":15.0,"atr":100.2,"point_pnl":-15.0,"contracts":130,"pnl":-10140.0,"balance":665981.5,"vix":17.1},{"date":"2025-05-19","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":5954.0,"exit_price":5968.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":73.32,"point_pnl":14.5,"contracts":128,"pnl":8896.0,"balance":674877.5,"vix":18.1},{"date":"2025-06-09","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6012.5,"exit_price":6019.25,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":72.45,"point_pnl":6.75,"contracts":129,"pnl":3966.75,"balance":678844.25,"vix":17.2},{"date":"2025-06-10","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6026.25,"exit_price":6011.25,"exit_type":"SL","exit_time":"11:32","sl_points":15.0,"atr":67.54,"point_pnl":-15.0,"contracts":130,"pnl":-10140.0,"balance":668704.25,"vix":17.0},{"date":"2025-06-11","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6061.5,"exit_price":6046.5,"exit_type":"SL","exit_time":"11:49","sl_points":15.0,"atr":67.27,"point_pnl":-15.0,"contracts":128,"pnl":-9984.0,"balance":658720.25,"vix":17.3},{"date":"2025-06-26","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6175.25,"exit_price":6192.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":71.14,"point_pnl":17.5,"contracts":126,"pnl":10647.0,"balance":669367.25,"vix":16.6},{"date":"2025-07-02","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6258.0,"exit_price":6270.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":57.66,"point_pnl":12.0,"contracts":128,"pnl":7296.0,"balance":676663.25,"vix":16.6},{"date":"2025-07-30","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6416.0,"exit_price":6401.0,"exit_type":"SL","exit_time":"14:50","sl_points":15.0,"atr":47.02,"point_pnl":-15.0,"contracts":130,"pnl":-10140.0,"balance":666523.25,"vix":15.5},{"date":"2025-08-22","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6472.0,"exit_price":6483.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":51.43,"point_pnl":11.0,"contracts":128,"pnl":6656.0,"balance":673179.25,"vix":14.2},{"date":"2025-09-02","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6417.75,"exit_price":6402.75,"exit_type":"SL","exit_time":"10:43","sl_points":15.0,"atr":48.96,"point_pnl":-15.0,"contracts":129,"pnl":-10062.0,"balance":663117.25,"vix":17.2},{"date":"2025-09-11","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6575.75,"exit_price":6595.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":49.95,"point_pnl":19.75,"contracts":127,"pnl":12160.25,"balance":675277.5,"vix":14.7},{"date":"2025-09-15","score":93,"boosted_score":93,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6619.75,"exit_price":6612.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":46.93,"point_pnl":-7.25,"contracts":129,"pnl":-5063.25,"balance":670214.25,"vix":15.7},{"date":"2025-09-22","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6724.5,"exit_price":6755.75,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":45.95,"point_pnl":31.25,"contracts":128,"pnl":19616.0,"balance":689830.25,"vix":16.1},{"date":"2025-10-28","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6916.5,"exit_price":6940.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":84.57,"point_pnl":24.0,"contracts":132,"pnl":15444.0,"balance":705274.25,"vix":16.4},{"date":"2025-11-07","score":89,"boosted_score":89,"boost_reasons":"","direction":"SHORT","strategy":"TREND_FOLLOW","entry_price":6703.25,"exit_price":6703.0,"exit_type":"BE","exit_time":"13:39","sl_points":15.0,"atr":72.55,"point_pnl":0.25,"contracts":135,"pnl":-236.25,"balance":705038.0,"vix":19.1},{"date":"2025-11-25","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6716.0,"exit_price":6776.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":105.71,"point_pnl":60.5,"contracts":135,"pnl":40432.5,"balance":745470.5,"vix":18.6},{"date":"2025-12-10","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6847.5,"exit_price":6832.5,"exit_type":"SL","exit_time":"11:03","sl_points":15.0,"atr":54.48,"point_pnl":-15.0,"contracts":143,"pnl":-11154.0,"balance":734316.5,"vix":15.8},{"date":"2025-12-17","score":91,"boosted_score":91,"boost_reasons":"","direction":"SHORT","strategy":"TREND_FOLLOW","entry_price":6800.75,"exit_price":6735.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":61.3,"point_pnl":65.75,"contracts":141,"pnl":45930.75,"balance":780247.25,"vix":17.6},{"date":"2026-01-08","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6962.25,"exit_price":6964.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":40.45,"point_pnl":1.75,"contracts":150,"pnl":862.5,"balance":781109.75,"vix":15.4},{"date":"2026-01-15","score":89,"boosted_score":89,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":7002.25,"exit_price":6987.25,"exit_type":"SL","exit_time":"15:00","sl_points":15.0,"atr":53.11,"point_pnl":-15.0,"contracts":150,"pnl":-11700.0,"balance":769409.75,"vix":15.8},{"date":"2026-01-21","score":89,"boosted_score":89,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6887.0,"exit_price":6872.0,"exit_type":"SL","exit_time":"11:42","sl_points":15.0,"atr":59.07,"point_pnl":-15.0,"contracts":147,"pnl":-11466.0,"balance":757943.75,"vix":16.9},{"date":"2026-02-02","score":97,"boosted_score":97,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6995.0,"exit_price":7005.5,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":71.7,"point_pnl":10.5,"contracts":145,"pnl":7177.5,"balance":765121.25,"vix":16.3},{"date":"2026-02-09","score":91,"boosted_score":91,"boost_reasons":"","direction":"LONG","strategy":"TREND_FOLLOW","entry_price":6960.75,"exit_price":6986.0,"exit_type":"EOD","exit_time":"15:30","sl_points":15.0,"atr":97.89,"point_pnl":25.25,"contracts":147,"pnl":18117.75,"balance":783239.0,"vix":17.4}]};
+
+const T = RAW.trades;
+const SB = RAW.start_balance;
+
+// ── Derived metrics ──
+function fmt$(v){return '$'+Math.round(v).toLocaleString()}
+function fmtPct(v){return (v>=0?'+':'')+v.toFixed(1)+'%'}
+function mean(arr){return arr.reduce((a,b)=>a+b,0)/arr.length}
+function std(arr){const m=mean(arr);return Math.sqrt(arr.map(x=>(x-m)**2).reduce((a,b)=>a+b,0)/arr.length)}
+
+// Trade returns (vs prev balance)
+const tradeReturns = T.map((t,i)=>{
+  const prev = i===0 ? SB : T[i-1].balance;
+  return t.pnl / prev;
+});
+
+// Per-trade annualization: ~756 trading days / 55 trades ≈ 13.7 days/trade → sqrt(252/13.7)
+const daysPerTrade = 756 / T.length;
+const annFactor = Math.sqrt(252 / daysPerTrade);
+
+const rf_per_trade = 0.05 * daysPerTrade / 252;
+const excess = tradeReturns.map(r => r - rf_per_trade);
+const sharpe = (mean(excess) / std(excess)) * annFactor;
+
+const downExcess = excess.filter(r => r < 0);
+const downsideDev = downExcess.length > 0 ? Math.sqrt(downExcess.map(r=>r**2).reduce((a,b)=>a+b,0)/downExcess.length) : 0.0001;
+const sortino = (mean(excess) / downsideDev) * annFactor;
+
+const calmar = RAW.annual_return / RAW.max_drawdown;
+
+// Drawdown series
+const ddArr = [];
+let peak = SB;
+T.forEach(t => {
+  if(t.balance > peak) peak = t.balance;
+  ddArr.push(((peak - t.balance) / peak * 100));
+});
+const maxDD = Math.max(...ddArr);
+
+// Monthly P&L
+const monthly = {};
+T.forEach(t => {
+  const ym = t.date.slice(0,7);
+  monthly[ym] = (monthly[ym]||0) + t.pnl;
+});
+const months = Object.keys(monthly).sort();
+const monthVals = months.map(m=>monthly[m]);
+
+// Yearly P&L
+const yearly = {};
+T.forEach(t => {
+  const y = t.date.slice(0,4);
+  yearly[y] = (yearly[y]||0) + t.pnl;
+});
+
+// Exit types
+const exitCounts = {EOD:0,SL:0,TRAIL:0,BE:0};
+T.forEach(t => { exitCounts[t.exit_type] = (exitCounts[t.exit_type]||0)+1; });
+
+// Direction stats
+const dirStats = {LONG:{w:0,l:0,pnl:0},SHORT:{w:0,l:0,pnl:0}};
+T.forEach(t => {
+  const d = t.direction;
+  dirStats[d].pnl += t.pnl;
+  if(t.pnl > 0) dirStats[d].w++; else dirStats[d].l++;
+});
+
+// VIX buckets
+const vixBuckets = [
+  {label:'<15',min:0,max:15,w:0,l:0},
+  {label:'15-18',min:15,max:18,w:0,l:0},
+  {label:'18-20',min:18,max:20,w:0,l:0},
+  {label:'>20',min:20,max:999,w:0,l:0}
+];
+T.forEach(t => {
+  const b = vixBuckets.find(b=>t.vix>=b.min&&t.vix<b.max);
+  if(b){if(t.pnl>0)b.w++;else b.l++;}
+});
+
+// Score buckets
+const scoreBuckets = [
+  {label:'89',min:89,max:90,w:0,l:0},
+  {label:'91-93',min:91,max:94,w:0,l:0},
+  {label:'97',min:97,max:98,w:0,l:0}
+];
+T.forEach(t => {
+  const b = scoreBuckets.find(b=>t.score>=b.min&&t.score<b.max);
+  if(b){if(t.pnl>0)b.w++;else b.l++;}
+});
+
+// PnL distribution histogram
+const bins = [-15000,-10000,-7500,-5000,-2500,0,2500,5000,10000,15000,20000,30000,50000];
+const histCounts = new Array(bins.length-1).fill(0);
+T.forEach(t => {
+  for(let i=0;i<bins.length-1;i++){
+    if(t.pnl>=bins[i]&&t.pnl<bins[i+1]){histCounts[i]++;break;}
+  }
+});
+const histLabels = bins.slice(0,-1).map((b,i)=>`${(b/1000).toFixed(0)}k~${(bins[i+1]/1000).toFixed(0)}k`);
+
+// ── Summary Cards ──
+const cData = [
+  {label:'총 수익률',val:fmtPct(RAW.pnl_pct),sub:`$${(RAW.total_pnl/1000).toFixed(0)}K 순이익`,cls:'green'},
+  {label:'연간 수익률',val:fmtPct(RAW.annual_return),sub:'CAGR · 3년 기간',cls:'blue'},
+  {label:'승률',val:RAW.win_rate+'%',sub:`${RAW.wins}승 / ${RAW.losses}패 · 총 ${RAW.total_trades}건`,cls:'purple'},
+  {label:'수익 팩터',val:RAW.profit_factor,sub:'총이익 ÷ 총손실',cls:'cyan'},
+  {label:'샤프 비율',val:sharpe.toFixed(2),sub:'연환산 (RF=5%)',cls:'yellow'},
+  {label:'소르티노',val:sortino.toFixed(2),sub:'하방 편차 기반',cls:'orange'},
+  {label:'칼마 비율',val:calmar.toFixed(2),sub:`최대 낙폭 ${RAW.max_drawdown}%`,cls:'red'},
+];
+const cardsEl = document.getElementById('summary-cards');
+cData.forEach(c=>{
+  cardsEl.innerHTML += `<div class="card ${c.cls}">
+    <div class="card-label">${c.label}</div>
+    <div class="card-value" style="color:var(--${c.cls==='green'?'green':c.cls==='red'?'red':c.cls==='blue'?'blue':c.cls==='purple'?'purple':c.cls==='cyan'?'cyan':c.cls==='yellow'?'yellow':'orange'})">${c.val}</div>
+    <div class="card-sub">${c.sub}</div>
+  </div>`;
+});
+
+// ── Chart defaults ──
+Chart.defaults.color = '#6b7084';
+Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
+Chart.defaults.font.size = 11;
+
+const gridColor = 'rgba(255,255,255,0.05)';
+const tickColor = '#6b7084';
+
+// ── Equity Curve ──
+new Chart(document.getElementById('equityChart'),{
+  type:'line',
+  data:{
+    labels:['Start',...T.map(t=>t.date)],
+    datasets:[{
+      label:'잔고',
+      data:[SB,...T.map(t=>t.balance)],
+      borderColor:'#5b8cff',
+      backgroundColor:'rgba(91,140,255,0.08)',
+      borderWidth:2,
+      pointRadius:3,
+      pointBackgroundColor:T.map(t=>t.pnl>0?'#00e87b':'#ff4d6a'),
+      pointBorderColor:'transparent',
+      fill:true,
+      tension:0.3
+    }]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{
+      legend:{display:false},
+      tooltip:{callbacks:{label:ctx=>'잔고: '+fmt$(ctx.raw)}}
+    },
+    scales:{
+      x:{grid:{color:gridColor},ticks:{color:tickColor,maxTicksLimit:12,maxRotation:30}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,callback:v=>'$'+(v/1000).toFixed(0)+'K'}}
+    }
+  }
+});
+
+// ── Drawdown Chart ──
+new Chart(document.getElementById('ddChart'),{
+  type:'line',
+  data:{
+    labels:T.map(t=>t.date),
+    datasets:[{
+      label:'드로우다운',
+      data:ddArr,
+      borderColor:'#ff4d6a',
+      backgroundColor:'rgba(255,77,106,0.12)',
+      borderWidth:1.5,
+      pointRadius:2,
+      fill:true,
+      tension:0.2
+    }]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>'-'+ctx.raw.toFixed(1)+'%'}}},
+    scales:{
+      x:{display:false},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,callback:v=>'-'+v.toFixed(0)+'%'},reverse:false,
+         title:{display:true,text:'드로우다운 %',color:'#6b7084',font:{size:10}}}
+    }
+  }
+});
+
+// ── Monthly P&L ──
+new Chart(document.getElementById('monthlyChart'),{
+  type:'bar',
+  data:{
+    labels:months,
+    datasets:[{
+      label:'월 손익',
+      data:monthVals,
+      backgroundColor:monthVals.map(v=>v>=0?'rgba(0,232,123,0.7)':'rgba(255,77,106,0.7)'),
+      borderColor:monthVals.map(v=>v>=0?'#00e87b':'#ff4d6a'),
+      borderWidth:1,
+      borderRadius:4
+    }]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{
+      legend:{display:false},
+      tooltip:{callbacks:{label:ctx=>(ctx.raw>=0?'+':'')+fmt$(ctx.raw)}}
+    },
+    scales:{
+      x:{grid:{color:gridColor},ticks:{color:tickColor,maxRotation:45,font:{size:9}}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,callback:v=>'$'+(v/1000).toFixed(0)+'K'}}
+    }
+  }
+});
+
+// ── Exit Type Donut ──
+const exitLabels = Object.keys(exitCounts);
+const exitVals = exitLabels.map(k=>exitCounts[k]);
+new Chart(document.getElementById('exitChart'),{
+  type:'doughnut',
+  data:{
+    labels:exitLabels,
+    datasets:[{
+      data:exitVals,
+      backgroundColor:['rgba(91,140,255,0.8)','rgba(255,77,106,0.8)','rgba(34,211,238,0.8)','rgba(255,182,39,0.8)'],
+      borderColor:'rgba(0,0,0,0.3)',
+      borderWidth:2
+    }]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{
+      legend:{position:'right',labels:{color:'#e4e6ef',font:{size:12},padding:12}},
+      tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${ctx.raw}건 (${(ctx.raw/T.length*100).toFixed(0)}%)`}},
+      title:{display:true,text:'청산 유형 분포',color:'#9ca3af',font:{size:12}}
+    }
+  }
+});
+
+// ── Direction Performance ──
+new Chart(document.getElementById('dirChart'),{
+  type:'bar',
+  data:{
+    labels:['LONG','SHORT'],
+    datasets:[
+      {label:'승',data:[dirStats.LONG.w,dirStats.SHORT.w],backgroundColor:'rgba(0,232,123,0.75)',borderRadius:4},
+      {label:'패',data:[dirStats.LONG.l,dirStats.SHORT.l],backgroundColor:'rgba(255,77,106,0.75)',borderRadius:4},
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{
+      legend:{labels:{color:'#e4e6ef'}},
+      title:{display:true,text:'방향별 성과',color:'#9ca3af',font:{size:12}},
+      tooltip:{callbacks:{afterBody:items=>{
+        const dir=items[0].label;
+        return [`총손익: ${fmt$(dirStats[dir].pnl)}`];
+      }}}
+    },
+    scales:{
+      x:{grid:{color:gridColor},ticks:{color:tickColor}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,stepSize:1}}
+    }
+  }
+});
+
+// ── VIX Regime ──
+new Chart(document.getElementById('vixChart'),{
+  type:'bar',
+  data:{
+    labels:vixBuckets.map(b=>'VIX '+b.label),
+    datasets:[
+      {label:'승',data:vixBuckets.map(b=>b.w),backgroundColor:'rgba(0,232,123,0.75)',borderRadius:4},
+      {label:'패',data:vixBuckets.map(b=>b.l),backgroundColor:'rgba(255,77,106,0.75)',borderRadius:4},
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{
+      legend:{labels:{color:'#e4e6ef'}},
+      title:{display:true,text:'VIX 구간별 성과',color:'#9ca3af',font:{size:12}},
+      tooltip:{callbacks:{afterBody:items=>{
+        const i=items[0].dataIndex;
+        const b=vixBuckets[i];
+        const wr=(b.w/(b.w+b.l)*100).toFixed(0);
+        return [`승률: ${wr}% (${b.w+b.l}건)`];
+      }}}
+    },
+    scales:{
+      x:{grid:{color:gridColor},ticks:{color:tickColor}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,stepSize:1}}
+    }
+  }
+});
+
+// ── Score Bucket ──
+new Chart(document.getElementById('scoreChart'),{
+  type:'bar',
+  data:{
+    labels:scoreBuckets.map(b=>'Score '+b.label),
+    datasets:[
+      {label:'승',data:scoreBuckets.map(b=>b.w),backgroundColor:'rgba(91,140,255,0.75)',borderRadius:4},
+      {label:'패',data:scoreBuckets.map(b=>b.l),backgroundColor:'rgba(255,182,39,0.75)',borderRadius:4},
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{
+      legend:{labels:{color:'#e4e6ef'}},
+      title:{display:true,text:'점수대별 성과',color:'#9ca3af',font:{size:12}},
+      tooltip:{callbacks:{afterBody:items=>{
+        const i=items[0].dataIndex;
+        const b=scoreBuckets[i];
+        const wr=b.w+b.l>0?(b.w/(b.w+b.l)*100).toFixed(0)+`% (${b.w+b.l}건)`:'N/A';
+        return [`승률: ${wr}`];
+      }}}
+    },
+    scales:{
+      x:{grid:{color:gridColor},ticks:{color:tickColor}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,stepSize:1}}
+    }
+  }
+});
+
+// ── P&L Distribution ──
+new Chart(document.getElementById('pnlDistChart'),{
+  type:'bar',
+  data:{
+    labels:histLabels,
+    datasets:[{
+      label:'거래 수',
+      data:histCounts,
+      backgroundColor:histLabels.map((_,i)=>bins[i]>=0?'rgba(0,232,123,0.7)':'rgba(255,77,106,0.7)'),
+      borderColor:histLabels.map((_,i)=>bins[i]>=0?'#00e87b':'#ff4d6a'),
+      borderWidth:1,borderRadius:4
+    }]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{
+      legend:{display:false},
+      title:{display:true,text:'손익 분포 (히스토그램)',color:'#9ca3af',font:{size:12}}
+    },
+    scales:{
+      x:{grid:{color:gridColor},ticks:{color:tickColor,maxRotation:45,font:{size:9}}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,stepSize:1}}
+    }
+  }
+});
+
+// ── Yearly Stats ──
+const yrEl = document.getElementById('yearly-stats');
+Object.keys(yearly).sort().forEach(y=>{
+  const v = yearly[y];
+  const prevBal = y==='2023'?SB:T.filter(t=>t.date.startsWith(String(+y-1))).slice(-1)[0]?.balance||SB;
+  const yrWins = T.filter(t=>t.date.startsWith(y)&&t.pnl>0).length;
+  const yrTotal = T.filter(t=>t.date.startsWith(y)).length;
+  const wr = yrTotal>0?(yrWins/yrTotal*100).toFixed(0):0;
+  yrEl.innerHTML += `<div class="stat-row">
+    <span class="stat-name">${y}</span>
+    <span class="stat-val" style="color:${v>=0?'var(--green)':'var(--red)'}">${v>=0?'+':''}\$${Math.round(v/1000)}K &nbsp;<span style="font-size:0.68rem;color:var(--muted)">${wr}% WR · ${yrTotal}건</span></span>
+  </div>`;
+});
+
+// ── Risk Stats ──
+const avgWin = mean(T.filter(t=>t.pnl>0).map(t=>t.pnl));
+const avgLoss = mean(T.filter(t=>t.pnl<0).map(t=>t.pnl));
+const riskStats = [
+  {n:'평균 수익',v:`+${fmt$(avgWin)}`,c:'var(--green)'},
+  {n:'평균 손실',v:`${fmt$(avgLoss)}`,c:'var(--red)'},
+  {n:'R:R 비율',v:(Math.abs(avgWin/avgLoss)).toFixed(2),c:'var(--blue)'},
+  {n:'최대 낙폭',v:`-${RAW.max_drawdown}%`,c:'var(--red)'},
+  {n:'샤프 비율',v:sharpe.toFixed(2),c:'var(--yellow)'},
+  {n:'소르티노',v:sortino.toFixed(2),c:'var(--orange)'},
+  {n:'칼마 비율',v:calmar.toFixed(2),c:'var(--cyan)'},
+];
+const riskEl = document.getElementById('risk-stats');
+riskStats.forEach(s=>{
+  riskEl.innerHTML += `<div class="stat-row">
+    <span class="stat-name">${s.n}</span>
+    <span class="stat-val" style="color:${s.c}">${s.v}</span>
+  </div>`;
+});
+
+// ── Trade Log ──
+const tbody = document.getElementById('trade-tbody');
+T.forEach((t,i)=>{
+  const pnlCls = t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+  const pnlStr = (t.pnl >= 0 ? '+' : '') + fmt$(t.pnl);
+  const dirCls = t.direction === 'LONG' ? 'dir-long' : 'dir-short';
+  const exitCls = t.exit_type==='EOD'?'exit-eod':t.exit_type==='SL'?'exit-sl':t.exit_type==='TRAIL'?'exit-trail':'exit-be';
+  tbody.innerHTML += `<tr>
+    <td style="color:var(--muted)">${i+1}</td>
+    <td>${t.date}</td>
+    <td><span class="badge-sm ${dirCls}">${t.direction}</span></td>
+    <td style="color:var(--muted);font-size:0.7rem">${t.strategy}</td>
+    <td>${t.entry_price.toFixed(2)}</td>
+    <td>${t.exit_price.toFixed(2)}</td>
+    <td><span class="badge-sm ${exitCls}">${t.exit_type}</span></td>
+    <td class="${t.point_pnl>=0?'pnl-pos':'pnl-neg'}">${t.point_pnl>=0?'+':''}${t.point_pnl.toFixed(2)}</td>
+    <td>${t.contracts}</td>
+    <td class="${pnlCls}">${pnlStr}</td>
+    <td style="font-size:0.72rem">${fmt$(t.balance)}</td>
+    <td style="color:var(--muted)">${t.vix}</td>
+    <td style="color:var(--purple)">${t.score}</td>
+  </tr>`;
+});
+</script>
+</body>
+</html>

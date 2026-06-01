@@ -228,7 +228,12 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
     trades = []
     wins, losses = 0, 0
     consecutive_losses = 0
+    consecutive_wins = 0
+    max_consec_wins = 0
+    max_consec_losses = 0
     lockout_cooldown = 0
+    monthly_pnl: Dict[str, float] = {}    # "YYYY-MM" -> net P&L
+    daily_balance: Dict[str, float] = {}  # "YYYY-MM-DD" -> closing balance
 
     pbar = tqdm(trading_days, desc="Backtesting Days")
 
@@ -478,16 +483,25 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
         balance += total_pnl
         if total_pnl > 0:
             wins += 1
+            consecutive_wins += 1
             consecutive_losses = 0
+            max_consec_wins = max(max_consec_wins, consecutive_wins)
         else:
             losses += 1
             consecutive_losses += 1
+            consecutive_wins = 0
+            max_consec_losses = max(max_consec_losses, consecutive_losses)
             if consecutive_losses >= LOCKOUT_STRIKES:
                 lockout_cooldown = LOCKOUT_DAYS
                 consecutive_losses = 0
             prev_balance = balance - total_pnl
             if prev_balance > 0 and abs(total_pnl) / prev_balance >= 0.06:
                 lockout_cooldown = LOCKOUT_DAYS
+
+        # Monthly tracking
+        month_key = day_str[:7]  # "YYYY-MM"
+        monthly_pnl[month_key] = monthly_pnl.get(month_key, 0) + total_pnl
+        daily_balance[day_str] = round(balance, 2)
 
         trades.append({
             "date": day_str,
@@ -517,34 +531,89 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
     total_trades = wins + losses
     total_pnl = balance - start_balance
     wr = (wins / total_trades * 100) if total_trades > 0 else 0
-    years = 3.0
-    annual_ret = ((balance / start_balance) ** (1/years) - 1) * 100 if balance > 0 else 0
 
+    # Derive number of years from actual date span
+    if trades:
+        d0 = datetime.strptime(trades[0]["date"], "%Y-%m-%d")
+        d1 = datetime.strptime(trades[-1]["date"], "%Y-%m-%d")
+        years = max((d1 - d0).days / 365.25, 0.01)
+    else:
+        years = 3.0
+    annual_ret = ((balance / start_balance) ** (1 / years) - 1) * 100 if balance > 0 else 0
+
+    # Drawdown
     peak = start_balance
-    max_dd = 0
+    max_dd = 0.0
+    dd_series: List[float] = []
     for t in trades:
-        if t["balance"] > peak: peak = t["balance"]
+        if t["balance"] > peak:
+            peak = t["balance"]
         dd = (peak - t["balance"]) / peak * 100
-        if dd > max_dd: max_dd = dd
+        dd_series.append(round(dd, 2))
+        if dd > max_dd:
+            max_dd = dd
 
-    avg_w = np.mean([t["pnl"] for t in trades if t["pnl"] > 0]) if wins > 0 else 0
-    avg_l = np.mean([t["pnl"] for t in trades if t["pnl"] <= 0]) if losses > 0 else 0
+    avg_w = np.mean([t["pnl"] for t in trades if t["pnl"] > 0]) if wins > 0 else 0.0
+    avg_l = np.mean([t["pnl"] for t in trades if t["pnl"] <= 0]) if losses > 0 else 0.0
     gross_wins = sum(t["pnl"] for t in trades if t["pnl"] > 0)
     gross_losses = abs(sum(t["pnl"] for t in trades if t["pnl"] <= 0))
     pf = round(gross_wins / gross_losses, 2) if gross_losses > 0 else float("inf")
 
-    # Count pro strategy usage
-    nr7_trades = sum(1 for t in trades if "NR7" in t.get("boost_reasons", ""))
-    pb_trades = sum(1 for t in trades if "3DAY_PB" in t.get("boost_reasons", ""))
-    trail_exits = sum(1 for t in trades if t.get("exit_type") == "TRAIL")
-    be_exits = sum(1 for t in trades if t.get("exit_type") == "BE")
-    sl_exits = sum(1 for t in trades if t.get("exit_type") == "SL")
-    eod_exits = sum(1 for t in trades if t.get("exit_type") == "EOD")
+    # ── Risk-adjusted metrics ──────────────────────────────────────────────
+    # Per-trade returns (vs. previous balance)
+    trade_returns: List[float] = []
+    prev_bal = start_balance
+    for t in trades:
+        trade_returns.append(t["pnl"] / prev_bal)
+        prev_bal = t["balance"]
 
+    # Annualisation factor: average calendar days between trades → daily equivalent
+    if len(trades) >= 2:
+        total_cal_days = (
+            datetime.strptime(trades[-1]["date"], "%Y-%m-%d") -
+            datetime.strptime(trades[0]["date"], "%Y-%m-%d")
+        ).days
+        avg_days_per_trade = total_cal_days / len(trades)
+    else:
+        avg_days_per_trade = 10.0
+    ann_factor = np.sqrt(252.0 / max(avg_days_per_trade, 1))
+
+    rf_per_trade = 0.05 * avg_days_per_trade / 365.25
+    excess = [r - rf_per_trade for r in trade_returns]
+    ret_mean = float(np.mean(excess)) if excess else 0.0
+    ret_std  = float(np.std(excess,  ddof=1)) if len(excess) > 1 else 1e-9
+    sharpe = round((ret_mean / ret_std) * ann_factor, 2) if ret_std > 0 else 0.0
+
+    neg_excess = [r for r in excess if r < 0]
+    downside_std = float(np.sqrt(np.mean([r ** 2 for r in neg_excess]))) if neg_excess else 1e-9
+    sortino = round((ret_mean / downside_std) * ann_factor, 2) if downside_std > 0 else 0.0
+
+    calmar = round(annual_ret / max_dd, 2) if max_dd > 0 else 0.0
+
+    # ── Monthly / yearly breakdown ─────────────────────────────────────────
+    yearly_pnl: Dict[str, float] = {}
+    for ym, pnl in monthly_pnl.items():
+        yr = ym[:4]
+        yearly_pnl[yr] = yearly_pnl.get(yr, 0.0) + pnl
+
+    # ── Exit / pro-filter counts ───────────────────────────────────────────
+    nr7_trades = sum(1 for t in trades if "NR7" in t.get("boost_reasons", ""))
+    pb_trades  = sum(1 for t in trades if "3DAY_PB" in t.get("boost_reasons", ""))
+    trail_exits = sum(1 for t in trades if t.get("exit_type") == "TRAIL")
+    be_exits    = sum(1 for t in trades if t.get("exit_type") == "BE")
+    sl_exits    = sum(1 for t in trades if t.get("exit_type") == "SL")
+    eod_exits   = sum(1 for t in trades if t.get("exit_type") == "EOD")
+
+    long_wins  = sum(1 for t in trades if t["direction"] in ("LONG", "CALL")  and t["pnl"] > 0)
+    long_total = sum(1 for t in trades if t["direction"] in ("LONG", "CALL"))
+    short_wins = sum(1 for t in trades if t["direction"] in ("SHORT", "PUT") and t["pnl"] > 0)
+    short_total = sum(1 for t in trades if t["direction"] in ("SHORT", "PUT"))
+
+    # ── Print results ──────────────────────────────────────────────────────
     print("\n" + "=" * 80)
     print("  MICRO E-MINI (MES) - PRO STRATEGY v4 RESULTS")
     print("=" * 80)
-    print(f"  Period:            {start_str} ~ {end_str}")
+    print(f"  Period:            {start_str} ~ {end_str}  ({years:.1f}y)")
     print(f"  Product:           Micro E-mini S&P 500 (MES) [${ES_MULTIPLIER:.0f}/pt]")
     print(f"  Strategy:          ATR SL={ATR_SL_MULT}x + Trail + BE | Risk={RISK_PCT*100:.1f}%")
     print(f"  Pro Filters:       NR7 + 3Day Pullback + Gap + Daily Bias")
@@ -552,15 +621,33 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
     print(f"  Final Balance:     ${balance:,.2f}")
     print(f"  Total P&L:         ${total_pnl:+,.2f} ({total_pnl/start_balance*100:+.1f}%)")
     print(f"  Annual Return:     {annual_ret:+.1f}%")
-    print(f"  Total Trades:      {total_trades}")
+    print(f"  Total Trades:      {total_trades}  (LONG={long_total}, SHORT={short_total})")
     print(f"  Win Rate:          {wr:.1f}% ({wins}W / {losses}L)")
+    print(f"    LONG  WR:        {long_wins/max(long_total,1)*100:.1f}%  ({long_wins}/{long_total})")
+    print(f"    SHORT WR:        {short_wins/max(short_total,1)*100:.1f}%  ({short_wins}/{short_total})")
     print(f"  Avg Win:           ${avg_w:+,.2f}")
     print(f"  Avg Loss:          ${avg_l:+,.2f}")
+    print(f"  R:R Ratio:         {abs(avg_w/avg_l):.2f}" if avg_l != 0 else "  R:R Ratio:         N/A")
     print(f"  Profit Factor:     {pf}")
     print(f"  Max Drawdown:      {max_dd:.1f}%")
-    print(f"  Exit Types:        EOD={eod_exits} | TRAIL={trail_exits} | BE={be_exits} | SL={sl_exits}")
+    print(f"  Max Consec. Wins:  {max_consec_wins}")
+    print(f"  Max Consec. Loss:  {max_consec_losses}")
+    print(f"  ── Risk-Adjusted ──────────────────────────────")
+    print(f"  Sharpe Ratio:      {sharpe:.2f}  (annualised, RF=5%)")
+    print(f"  Sortino Ratio:     {sortino:.2f}  (downside deviation)")
+    print(f"  Calmar Ratio:      {calmar:.2f}  (annual / max-DD)")
+    print(f"  ── Exit Types ─────────────────────────────────")
+    print(f"  Exit Types:        EOD={eod_exits} | SL={sl_exits} | TRAIL={trail_exits} | BE={be_exits}")
     print(f"  NR7 Boosted:       {nr7_trades} trades")
     print(f"  3Day PB Boosted:   {pb_trades} trades")
+    print(f"  ── Monthly P&L ────────────────────────────────")
+    for ym in sorted(monthly_pnl):
+        sign = "+" if monthly_pnl[ym] >= 0 else ""
+        print(f"    {ym}:  {sign}${monthly_pnl[ym]:,.0f}")
+    print(f"  ── Yearly P&L ─────────────────────────────────")
+    for yr in sorted(yearly_pnl):
+        sign = "+" if yearly_pnl[yr] >= 0 else ""
+        print(f"    {yr}:  {sign}${yearly_pnl[yr]:,.0f}")
     print(f"  Running Time:      {time.time()-t_start:.1f}s")
     print("=" * 80)
 
@@ -574,22 +661,39 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
         "total_pnl": round(total_pnl, 2),
         "pnl_pct": round(total_pnl / start_balance * 100, 1),
         "annual_return": round(annual_ret, 1),
+        "years": round(years, 2),
         "total_trades": total_trades,
         "wins": wins,
         "losses": losses,
         "win_rate": round(wr, 1),
+        "long_trades": long_total,
+        "long_wins": long_wins,
+        "short_trades": short_total,
+        "short_wins": short_wins,
         "avg_win": round(avg_w, 2),
         "avg_loss": round(avg_l, 2),
+        "rr_ratio": round(abs(avg_w / avg_l), 2) if avg_l != 0 else None,
         "profit_factor": pf,
         "max_drawdown": round(max_dd, 1),
+        "max_consec_wins": max_consec_wins,
+        "max_consec_losses": max_consec_losses,
+        "sharpe_ratio": sharpe,
+        "sortino_ratio": sortino,
+        "calmar_ratio": calmar,
+        "exit_counts": {"EOD": eod_exits, "SL": sl_exits, "TRAIL": trail_exits, "BE": be_exits},
         "nr7_boosted_trades": nr7_trades,
         "pullback_boosted_trades": pb_trades,
-        "trades": trades
+        "monthly_pnl": {k: round(v, 2) for k, v in sorted(monthly_pnl.items())},
+        "yearly_pnl": {k: round(v, 2) for k, v in sorted(yearly_pnl.items())},
+        "daily_balance": daily_balance,
+        "drawdown_series": [round(d, 2) for d in dd_series],
+        "trades": trades,
     }
 
-    with open("backtest_futures.json", "w") as f:
+    out_path = "backtest_futures.json"
+    with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
-    print("[*] Saved results to backtest_futures.json")
+    print(f"[*] Saved results to {out_path}")
 
     return results
 
