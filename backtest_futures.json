@@ -1,5 +1,5 @@
 {
-  "model": "MES Futures Pro Strategy v7 (ML Walk-Forward Sizing + TP=1.5xSL, STRONG\u226588)",
+  "model": "MES Futures Pro Strategy v9 (ML Walk-Forward \u00b7 PRIME+REENTRY+GAMMA \u00b7 STRONG\u226588)",
   "period": "2023-03-25 ~ 2026-05-29",
   "product": "Micro E-mini S&P 500 (MES) [$5/pt]",
   "strategy": "ATR SL=1.5x \u00b7 TP=1.5xSL \u00b7 MinScore=88 \u00b7 ML Walk-Forward",

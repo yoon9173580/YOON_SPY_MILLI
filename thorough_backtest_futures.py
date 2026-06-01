@@ -922,7 +922,7 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
 
     sizing_label = f"FIXED {FIXED_CONTRACTS}계약" if fixed_size else f"DYNAMIC Risk={RISK_PCT*100:.1f}%"
     results = {
-        "model": f"MES Futures Pro Strategy v7 (ML Walk-Forward Sizing + TP=1.5xSL, STRONG≥88)",
+        "model": f"MES Futures Pro Strategy v9 (ML Walk-Forward · PRIME+REENTRY+GAMMA · STRONG≥88)",
         "period": f"{start_str} ~ {end_str}",
         "product": f"Micro E-mini S&P 500 (MES) [${ES_MULTIPLIER:.0f}/pt]",
         "strategy": f"ATR SL={ATR_SL_MULT}x · TP={TP_MULT}xSL · MinScore={MIN_SCORE} · ML Walk-Forward",
