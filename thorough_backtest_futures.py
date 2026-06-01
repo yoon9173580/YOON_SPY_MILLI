@@ -61,7 +61,7 @@ RSI_UPPER = 90.0             # RSI upper veto
 RSI_LOWER = 10.0             # RSI lower veto
 SECTOR_THRESHOLD = 1.8       # Sector breakout veto
 LOCKOUT_STRIKES = 3          # Consecutive losses before lockout (was 2)
-LOCKOUT_DAYS = 1             # Days to cool down (was 3)
+LOCKOUT_DAYS = 2             # Days to cool down
 ATR_SL_MULT = 1.5            # SL = 1.5x ATR(14) dynamic
 TRAILING_ACTIVATION = 1.0    # Activate trailing stop after 1.0x ATR profit
 TRAILING_STEP = 0.5          # Trail by 0.5x ATR behind highest profit
