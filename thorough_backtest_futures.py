@@ -179,12 +179,19 @@ def check_daily_bias(daily_ohlc, trading_days, idx, spy_open):
 
 def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
                          end_str: str = "2026-03-25",
-                         start_balance: float = 10000.0):
+                         start_balance: float = 10000.0,
+                         fixed_size: bool = False):
     t_start = time.time()
+    # Pre-compute fixed contracts using start_balance (no reinvestment)
+    _fixed_sl_ref = 15.0  # reference SL for fixed sizing (PRIME cap)
+    _fixed_risk_per = (_fixed_sl_ref + ES_SLIPPAGE_PTS * 2) * ES_MULTIPLIER + ES_COMMISSION_RT
+    FIXED_CONTRACTS = max(1, int((start_balance * RISK_PCT) / _fixed_risk_per))
     print("=" * 80)
     print("  MICRO E-MINI (MES) - PRO TRADER STRATEGY INTEGRATION")
     print(f"  ATR SL={ATR_SL_MULT}x | Risk={RISK_PCT*100:.1f}% | Margin=${ES_DAY_MARGIN:.0f}")
     print(f"  NR7 + 3Day Pullback + Gap + Daily Bias | MIN_SCORE={MIN_SCORE}")
+    sizing_mode = f"FIXED ({FIXED_CONTRACTS}계약)" if fixed_size else "DYNAMIC (잔고비례)"
+    print(f"  포지션 사이징: {sizing_mode}")
     print("=" * 80)
 
     # 1. Load VIX
@@ -398,20 +405,21 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
                 trade_dir = "SHORT" if is_bull_signal else "LONG"
                 strategy_used = "MEAN_REVERSION"
 
-            # Kelly-Informed Position Sizing
-            max_risk_dollar = balance * RISK_PCT
-            risk_per_contract = (window_sl + ES_SLIPPAGE_PTS * 2) * ES_MULTIPLIER + ES_COMMISSION_RT
-            num_contracts = int(max_risk_dollar / risk_per_contract)
-            if num_contracts == 0:
-                num_contracts = 1
-
-            # Margin check
-            max_by_margin = int((balance * MARGIN_UTIL) / ES_DAY_MARGIN)
-            if max_by_margin == 0:
-                max_by_margin = 1
-            num_contracts = min(num_contracts, max_by_margin)
-            if num_contracts * ES_DAY_MARGIN > balance:
-                continue
+            # Position Sizing
+            if fixed_size:
+                num_contracts = FIXED_CONTRACTS
+            else:
+                max_risk_dollar = balance * RISK_PCT
+                risk_per_contract = (window_sl + ES_SLIPPAGE_PTS * 2) * ES_MULTIPLIER + ES_COMMISSION_RT
+                num_contracts = int(max_risk_dollar / risk_per_contract)
+                if num_contracts == 0:
+                    num_contracts = 1
+                max_by_margin = int((balance * MARGIN_UTIL) / ES_DAY_MARGIN)
+                if max_by_margin == 0:
+                    max_by_margin = 1
+                num_contracts = min(num_contracts, max_by_margin)
+                if num_contracts * ES_DAY_MARGIN > balance:
+                    continue
 
             # Minute-by-Minute Simulation
             entry_price = spy_entry_price
@@ -670,11 +678,14 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
     print(f"  Running Time:      {time.time()-t_start:.1f}s")
     print("=" * 80)
 
+    sizing_label = f"FIXED {FIXED_CONTRACTS}계약" if fixed_size else f"DYNAMIC Risk={RISK_PCT*100:.1f}%"
     results = {
-        "model": "MES Futures Pro Strategy v5 (Dual-Window, MODERATE grade, live params)",
+        "model": f"MES Futures Pro Strategy v5 (Dual-Window, MODERATE grade, {sizing_label})",
         "period": f"{start_str} ~ {end_str}",
         "product": f"Micro E-mini S&P 500 (MES) [${ES_MULTIPLIER:.0f}/pt]",
-        "strategy": f"ATR SL={ATR_SL_MULT}x + PRIME/GAMMA | MinScore={MIN_SCORE} | Risk={RISK_PCT*100:.1f}%",
+        "strategy": f"ATR SL={ATR_SL_MULT}x + PRIME/GAMMA | MinScore={MIN_SCORE} | {sizing_label}",
+        "fixed_size": fixed_size,
+        "fixed_contracts": FIXED_CONTRACTS if fixed_size else None,
         "prime_trades": prime_cnt,
         "gamma_trades": gamma_cnt,
         "strong_trades": strong_cnt,
@@ -727,6 +738,8 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=str, default="2023-03-25")
     parser.add_argument("--end", type=str, default="2026-03-25")
     parser.add_argument("--balance", type=float, default=10000.0)
+    parser.add_argument("--fixed-size", action="store_true",
+                        help="Use fixed contract count (no reinvestment effect)")
 
     args = parser.parse_args()
 
@@ -739,4 +752,5 @@ if __name__ == "__main__":
         start_str=args.start,
         end_str=args.end,
         start_balance=args.balance,
+        fixed_size=args.fixed_size,
     )
