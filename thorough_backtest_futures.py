@@ -50,22 +50,24 @@ ES_COMMISSION_RT = 0.50    # Round-trip commission per MES contract
 ES_SLIPPAGE_PTS = 0.25     # 1 tick slippage per side
 ES_DAY_MARGIN = 50.0       # Day-trading margin per MES contract
 
-# -- Strategy Parameters (matches api/data.py live RISK_PCT) --
-MIN_SCORE = 78              # MODERATE grade threshold (was 88 — STRONG only)
-RISK_PCT = 0.015            # 1.5% per-trade risk (live system value)
+# -- Strategy Parameters v6 --
+# -- Strategy Parameters v6 --
+MIN_SCORE = 88              # STRONG 등급만 (검증된 WR 우위)
+RISK_PCT = 0.015            # 1.5% per-trade risk
 MARGIN_UTIL = 0.95          # 95% margin utilization allowed
-EXIT_TIME = dtime(15, 30)   # Exit at 15:30 (avoid last 30min noise)
+EXIT_TIME = dtime(15, 30)   # Exit at 15:30
 VIX_THRESHOLD = 20.0        # VIX < 20 = Trend Follow, >= 20 = Mean Reversion
-ADX_RUNAWAY = 40.0           # ADX runaway veto
-RSI_UPPER = 90.0             # RSI upper veto
-RSI_LOWER = 10.0             # RSI lower veto
-SECTOR_THRESHOLD = 1.8       # Sector breakout veto
-LOCKOUT_STRIKES = 3          # Consecutive losses before lockout (was 2)
-LOCKOUT_DAYS = 2             # Days to cool down
-ATR_SL_MULT = 1.5            # SL = 1.5x ATR(14) dynamic
-TRAILING_ACTIVATION = 1.0    # Activate trailing stop after 1.0x ATR profit
-TRAILING_STEP = 0.5          # Trail by 0.5x ATR behind highest profit
-BREAKEVEN_AT = 0.5           # Move SL to breakeven after 0.5x ATR profit
+ADX_RUNAWAY = 40.0          # ADX runaway veto
+RSI_UPPER = 90.0            # RSI upper veto
+RSI_LOWER = 10.0            # RSI lower veto
+SECTOR_THRESHOLD = 1.8      # Sector breakout veto
+LOCKOUT_STRIKES = 2         # Consecutive losses before lockout (완화: 2→빠른 복귀)
+LOCKOUT_DAYS = 1            # Days to cool down (완화)
+ATR_SL_MULT = 1.5           # SL = 1.5x ATR(14) dynamic
+TP_MULT = 1.5               # Take-Profit = 1.5x SL (현실적 목표, R:R ≈ 1.5:1)
+TRAILING_ACTIVATION = 0.5   # Trail after 0.5x ATR profit (was 1.0)
+TRAILING_STEP = 0.25        # Trail 0.25x ATR behind peak (was 0.5)
+BREAKEVEN_AT = 0.25         # BE after 0.25x ATR profit (was 0.5)
 
 # -- Dual Entry Windows --
 ENTRY_WINDOWS = [dtime(10, 30), dtime(14, 0)]   # PRIME (10:30) + GAMMA (14:00)
@@ -423,6 +425,8 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
 
             # Minute-by-Minute Simulation
             entry_price = spy_entry_price
+            tp_points = window_sl * TP_MULT
+            tp_target = entry_price + tp_points if trade_dir == "LONG" else entry_price - tp_points
             sl_target = entry_price - window_sl if trade_dir == "LONG" else entry_price + window_sl
             breakeven_activated = False
             trailing_activated = False
@@ -443,6 +447,13 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
                         best_price = h_bar
                     current_profit_pts = best_price - entry_price
 
+                    # Take-Profit check (before SL to prioritize gain locking)
+                    if h_bar >= tp_target:
+                        exit_price = tp_target
+                        exit_type = "TP"
+                        exit_time_str = ts_bar.strftime("%H:%M")
+                        break
+
                     if not breakeven_activated and current_profit_pts >= BREAKEVEN_AT * atr_val:
                         sl_target = entry_price + ES_SLIPPAGE_PTS
                         breakeven_activated = True
@@ -462,6 +473,13 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
                     if l_bar < best_price:
                         best_price = l_bar
                     current_profit_pts = entry_price - best_price
+
+                    # Take-Profit check
+                    if l_bar <= tp_target:
+                        exit_price = tp_target
+                        exit_type = "TP"
+                        exit_time_str = ts_bar.strftime("%H:%M")
+                        break
 
                     if not breakeven_activated and current_profit_pts >= BREAKEVEN_AT * atr_val:
                         sl_target = entry_price - ES_SLIPPAGE_PTS
@@ -623,6 +641,7 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
     be_exits    = sum(1 for t in trades if t.get("exit_type") == "BE")
     sl_exits    = sum(1 for t in trades if t.get("exit_type") == "SL")
     eod_exits   = sum(1 for t in trades if t.get("exit_type") == "EOD")
+    tp_exits    = sum(1 for t in trades if t.get("exit_type") == "TP")
 
     long_wins  = sum(1 for t in trades if t["direction"] in ("LONG", "CALL")  and t["pnl"] > 0)
     long_total = sum(1 for t in trades if t["direction"] in ("LONG", "CALL"))
@@ -664,7 +683,7 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
     print(f"  Sortino Ratio:     {sortino:.2f}  (downside deviation)")
     print(f"  Calmar Ratio:      {calmar:.2f}  (annual / max-DD)")
     print(f"  ── Exit Types ─────────────────────────────────")
-    print(f"  Exit Types:        EOD={eod_exits} | SL={sl_exits} | TRAIL={trail_exits} | BE={be_exits}")
+    print(f"  Exit Types:        EOD={eod_exits} | TP={tp_exits} | SL={sl_exits} | TRAIL={trail_exits} | BE={be_exits}")
     print(f"  NR7 Boosted:       {nr7_trades} trades")
     print(f"  3Day PB Boosted:   {pb_trades} trades")
     print(f"  ── Monthly P&L ────────────────────────────────")
@@ -680,10 +699,10 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
 
     sizing_label = f"FIXED {FIXED_CONTRACTS}계약" if fixed_size else f"DYNAMIC Risk={RISK_PCT*100:.1f}%"
     results = {
-        "model": f"MES Futures Pro Strategy v5 (Dual-Window, MODERATE grade, {sizing_label})",
+        "model": f"MES Futures Pro Strategy v6 (TP={TP_MULT}xSL, Score≥{MIN_SCORE}, EarlyBE/Trail)",
         "period": f"{start_str} ~ {end_str}",
         "product": f"Micro E-mini S&P 500 (MES) [${ES_MULTIPLIER:.0f}/pt]",
-        "strategy": f"ATR SL={ATR_SL_MULT}x + PRIME/GAMMA | MinScore={MIN_SCORE} | {sizing_label}",
+        "strategy": f"ATR SL={ATR_SL_MULT}x · TP={TP_MULT}xSL · MinScore={MIN_SCORE} · {sizing_label}",
         "fixed_size": fixed_size,
         "fixed_contracts": FIXED_CONTRACTS if fixed_size else None,
         "prime_trades": prime_cnt,
@@ -714,7 +733,7 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
         "sharpe_ratio": sharpe,
         "sortino_ratio": sortino,
         "calmar_ratio": calmar,
-        "exit_counts": {"EOD": eod_exits, "SL": sl_exits, "TRAIL": trail_exits, "BE": be_exits},
+        "exit_counts": {"EOD": eod_exits, "TP": tp_exits, "SL": sl_exits, "TRAIL": trail_exits, "BE": be_exits},
         "nr7_boosted_trades": nr7_trades,
         "pullback_boosted_trades": pb_trades,
         "monthly_pnl": {k: round(v, 2) for k, v in sorted(monthly_pnl.items())},
