@@ -62,8 +62,8 @@ ES_COMMISSION_RT = 0.50    # Round-trip commission per MES contract
 ES_SLIPPAGE_PTS = 0.25     # 1 tick slippage per side
 ES_DAY_MARGIN = 50.0       # Day-trading margin per MES contract
 
-# -- Strategy Parameters v6 --
-MIN_SCORE = 88              # STRONG 등급 유지 (v6 기반)
+# -- Strategy Parameters v8 (more samples: extended data, no lockout, STRONG grade) --
+MIN_SCORE = 88              # STRONG grade + ML hard filter = high-quality trades
 RISK_PCT = 0.015
 MARGIN_UTIL = 0.95
 EXIT_TIME = dtime(15, 30)
@@ -72,8 +72,8 @@ ADX_RUNAWAY = 40.0
 RSI_UPPER = 90.0
 RSI_LOWER = 10.0
 SECTOR_THRESHOLD = 1.8
-LOCKOUT_STRIKES = 2
-LOCKOUT_DAYS = 1
+LOCKOUT_STRIKES = 5         # lenient lockout (was 2)
+LOCKOUT_DAYS = 0            # no cooldown period (was 1)
 ATR_SL_MULT = 1.5
 TP_MULT = 1.5               # TP = 1.5x SL
 TRAILING_ACTIVATION = 0.5
@@ -195,16 +195,16 @@ def check_daily_bias(daily_ohlc, trading_days, idx, spy_open):
 # ─────────────────────────────────────────────────────────────────────────────
 class WalkForwardML:
     """
-    Walk-Forward ML 사이징 시스템.
-    - 진입 차단(필터링) 없음 — 사이징 조정만
-    - LightGBM (기본) / LogisticRegression (폴백)
-    - MIN_TRAIN 건 후 활성화, RETRAIN_N 건마다 재학습
+    Walk-Forward ML 사이징+필터링 시스템.
+    - SKIP_AFTER_N 건 이후: P(win) < SKIP_THRESH → 진입 차단
     - P(win) >= SIZE_HIGH  → 계약수 +30%
     - P(win) >= SIZE_MED   → 계약수 +15%
     - P(win) <  SIZE_LOW   → 계약수 -20%
     """
-    MIN_TRAIN  = 15
-    RETRAIN_N  = 5
+    MIN_TRAIN    = 15
+    SKIP_AFTER_N = 25    # start hard-filtering after 25 completed trades
+    SKIP_THRESH  = 0.43  # skip if confidence < this threshold
+    RETRAIN_N    = 5
     SIZE_HIGH  = 0.62   # +30%
     SIZE_MED   = 0.55   # +15%
     SIZE_LOW   = 0.44   # -20%
@@ -223,7 +223,8 @@ class WalkForwardML:
         self.scaler = None
         self.is_trained = False
         self.n_since_retrain = 0
-        self.conf_history: List[float] = []
+        self.conf_history: List[float] = []        # all predictions (including skipped)
+        self.executed_confs: List[float] = []      # confs for executed trades only
         self.feature_importance: Dict[str, float] = {}
 
     @staticmethod
@@ -262,6 +263,8 @@ class WalkForwardML:
     def update(self, feat: List[float], won: bool) -> None:
         self.X.append(feat)
         self.y.append(1 if won else 0)
+        if self.conf_history:
+            self.executed_confs.append(self.conf_history[-1])
         self.n_since_retrain += 1
         if len(self.X) >= self.MIN_TRAIN and self.n_since_retrain >= self.RETRAIN_N:
             self._fit()
@@ -307,6 +310,12 @@ class WalkForwardML:
         except Exception as e:
             pass
 
+    def should_skip(self) -> bool:
+        """Returns True if this trade should be skipped (low ML confidence after sufficient training)."""
+        if not self.is_trained or len(self.y) < self.SKIP_AFTER_N or not self.conf_history:
+            return False
+        return self.conf_history[-1] < self.SKIP_THRESH
+
     def apply_sizing(self, num_contracts: int, max_contracts: int) -> int:
         if not self.is_trained or not self.conf_history:
             return num_contracts
@@ -323,11 +332,13 @@ class WalkForwardML:
         if not self.y:
             return {}
         conf_arr = np.array(self.conf_history) if self.conf_history else np.array([0.5])
+        # Use aligned executed_confs (same length as y) for accurate high_conf_wr
+        confs_exec = self.executed_confs if self.executed_confs else [0.5] * len(self.y)
         wins_in_high = sum(
-            1 for i, c in enumerate(self.conf_history)
-            if c >= self.SIZE_HIGH and i < len(self.y) and self.y[i] == 1
+            1 for c, w in zip(confs_exec, self.y)
+            if c >= self.SIZE_HIGH and w == 1
         )
-        n_high = sum(1 for c in self.conf_history if c >= self.SIZE_HIGH)
+        n_high = sum(1 for c in confs_exec if c >= self.SIZE_HIGH)
         return {
             "total_predictions":  len(self.conf_history),
             "training_samples":   len(self.X),
@@ -583,6 +594,8 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
             )
             ml_conf = ml.predict(ml_feat)
             ml.conf_history.append(round(ml_conf, 3))
+            if ml.should_skip():
+                continue  # ML hard filter: skip low-confidence trades
             # ────────────────────────────────────────────────────────────────
 
             # Position Sizing
@@ -942,7 +955,7 @@ def run_futures_backtest(csv_path: str, start_str: str = "2023-03-25",
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="S&P 500 Futures (ES) Pro Strategy Backtest")
-    parser.add_argument("--csv", type=str, default="C:/Users/Gun_y/Desktop/SPY_1min_data.csv")
+    parser.add_argument("--csv", type=str, default="SPY_1min_synthetic.csv")
     parser.add_argument("--start", type=str, default="2023-03-25")
     parser.add_argument("--end", type=str, default="2026-03-25")
     parser.add_argument("--balance", type=float, default=10000.0)

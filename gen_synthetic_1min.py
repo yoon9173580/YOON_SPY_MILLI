@@ -74,7 +74,7 @@ def synthetic_1min_day(date, o, h, l, c, vol, seed=None):
 
 
 def main():
-    start = "2023-03-01"
+    start = "2021-01-01"
     end   = "2026-06-01"
     out   = "SPY_1min_synthetic.csv"
 
